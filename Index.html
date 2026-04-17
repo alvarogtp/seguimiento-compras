@@ -1,0 +1,1833 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard Comercial — Gestapack</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "react":            "https://esm.sh/react@18?dev",
+      "react-dom/client": "https://esm.sh/react-dom@18/client?dev",
+      "recharts":         "https://esm.sh/recharts@2?dev",
+      "xlsx":             "https://esm.sh/xlsx@0.18.5?dev",
+      "lucide-react":     "https://esm.sh/lucide-react@0.383.0?dev"
+    }
+  }
+  </script>
+  <style>
+    @import url('https://fonts.cdnfonts.com/css/gotham');
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800;900&display=swap');
+
+    * {
+      font-family: 'Gotham', 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    }
+    body {
+      margin: 0;
+      background: #000000;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0a0a0a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #2a2a2a;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #444;
+    }
+    .gold-grad {
+      background: linear-gradient(90deg, #aa6b01 0%, #c88d31 28%, #b67815 54%, #c08325 78%, #b17207 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .bg-gray-950 { background-color: #000000 !important; }
+    .bg-gray-900 { background-color: #080808 !important; }
+    .bg-gray-800 { background-color: #111111 !important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+import React from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import * as XLSX from "xlsx";
+import { Search, TrendingUp, ShoppingCart, Package, ChevronLeft, ChevronRight, Upload, BarChart2, X, Award, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown, ArrowUpDown, Download, Eye, Loader2, Info, DollarSign, CheckCircle, Tag, Trash2, FileText } from "lucide-react";
+// ═══════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════
+
+const parseNum = (v) => {
+  if (v == null || v === "" || v === "-") return 0;
+  if (typeof v === "number") return isNaN(v) ? 0 : v;
+  const s = String(v).trim().replace(/[$\s]/g, "").replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+};
+
+const fmt = (n, dec = 0) => {
+  if (n == null || isNaN(n)) return "-";
+  return new Intl.NumberFormat("es-CL", {
+    minimumFractionDigits: dec,
+    maximumFractionDigits: dec,
+  }).format(n);
+};
+const fmtM   = (n) => fmt(n, 0);
+const fmtPct = (n) => (!isFinite(n) || isNaN(n) ? "-" : fmt(n, 1) + "%");
+
+const parseDate = (s) => {
+  if (!s) return null;
+  const p = String(s).trim().split("/");
+  if (p.length === 3) return new Date(+p[2], +p[1] - 1, +p[0]);
+  return null;
+};
+const fmtDate = (d) => {
+  if (!d) return "";
+  return [
+    String(d.getDate()).padStart(2, "0"),
+    String(d.getMonth() + 1).padStart(2, "0"),
+    d.getFullYear(),
+  ].join("/");
+};
+
+const parseCSVText = (text) => {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return [];
+  const headers = lines[0].replace(/^\uFEFF/, "").split(";").map((h) => h.trim());
+  const result = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(";");
+    if (vals.every((v) => !v.trim())) continue;
+    const row = {};
+    headers.forEach((h, j) => { row[h] = (vals[j] || "").trim(); });
+    result.push(row);
+  }
+  return result;
+};
+
+const col = (row, ...keys) => {
+  for (const k of keys) {
+    const found = Object.keys(row).find(
+      (rk) => rk.toLowerCase().trim() === k.toLowerCase().trim()
+    );
+    if (found !== undefined && row[found] !== undefined) return row[found];
+  }
+  return "";
+};
+
+// ═══════════════════════════════════════════════
+//  PERIODS
+// ═══════════════════════════════════════════════
+
+const s0  = (d) => { const r = new Date(d); r.setHours(0, 0, 0, 0);     return r; };
+const e23 = (d) => { const r = new Date(d); r.setHours(23, 59, 59, 999); return r; };
+
+const getWeekStart = (d) => {
+  const day = d.getDay();
+  const r   = new Date(d);
+  r.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  return s0(r);
+};
+
+const getPeriods = (ref) => {
+  const today      = e23(ref);
+  const weekStart  = getWeekStart(ref);
+  const weekEnd    = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6); e23(weekEnd);
+  const monthStart  = new Date(ref.getFullYear(), ref.getMonth(), 1);
+  const monthEnd    = new Date(ref.getFullYear(), ref.getMonth() + 1, 0, 23, 59, 59, 999);
+  const roll30Start = s0(new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 29));
+  const qMonth      = Math.floor(ref.getMonth() / 3) * 3;
+  const qStart      = new Date(ref.getFullYear(), qMonth, 1);
+  const qEnd        = new Date(ref.getFullYear(), qMonth + 3, 0, 23, 59, 59, 999);
+  const roll90Start = s0(new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 89));
+  return { weekStart, weekEnd, monthStart, monthEnd, roll30Start, qStart, qEnd, roll90Start, today };
+};
+
+const inR = (date, start, end) => date >= start && date <= end;
+
+// ═══════════════════════════════════════════════
+//  SORT
+// ═══════════════════════════════════════════════
+
+const useSort = (initKey = null, initDir = "desc") => {
+  const [st, setSt] = useState({ key: initKey, dir: initDir });
+  const toggle = useCallback((k) => {
+    setSt((p) => ({ key: k, dir: p.key === k && p.dir === "desc" ? "asc" : "desc" }));
+  }, []);
+  return { ...st, toggle };
+};
+
+const applySort = (data, key, dir, accessor) => {
+  if (!key) return data;
+  return [...data].sort((a, b) => {
+    let va = accessor ? accessor(a, key) : a[key];
+    let vb = accessor ? accessor(b, key) : b[key];
+    if (typeof va === "string") va = va.toLowerCase();
+    if (typeof vb === "string") vb = vb.toLowerCase();
+    va = va ?? 0; vb = vb ?? 0;
+    if (va < vb) return dir === "asc" ? -1 : 1;
+    if (va > vb) return dir === "asc" ?  1 : -1;
+    return 0;
+  });
+};
+
+// ═══════════════════════════════════════════════
+//  PAGINATION
+// ═══════════════════════════════════════════════
+
+const usePag = (data, size = 50) => {
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(data.length / size));
+  const safePage   = Math.min(page, totalPages - 1);
+  const slice      = data.slice(safePage * size, (safePage + 1) * size);
+  const go = useCallback(
+    (p) => setPage(Math.max(0, Math.min(p, Math.max(0, Math.ceil(data.length / size) - 1)))),
+    [data.length, size]
+  );
+  return { page: safePage, go, totalPages, slice, total: data.length };
+};
+
+// ═══════════════════════════════════════════════
+//  UI ATOMS
+// ═══════════════════════════════════════════════
+
+const Card = ({ label, value, sub, color = "text-white", icon }) => (
+  <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+    <div className="flex items-center justify-between mb-1">
+      <span className="text-xs text-gray-400 uppercase tracking-wide">{label}</span>
+      {icon && <span className="text-gray-600">{icon}</span>}
+    </div>
+    <div className={`text-xl font-bold ${color}`}>{value}</div>
+    {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
+  </div>
+);
+
+const Th = ({ ch, right }) => (
+  <th className={`px-3 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap ${right ? "text-right" : "text-left"}`}>
+    {ch}
+  </th>
+);
+
+const SortTh = ({ label, sk, currentKey, dir, onSort, right }) => {
+  const active = sk === currentKey;
+  return (
+    <th
+      onClick={() => onSort(sk)}
+      className={`px-3 py-2.5 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap transition-colors group ${
+        active ? "text-blue-400" : "text-gray-400 hover:text-gray-200"
+      } ${right ? "text-right" : "text-left"}`}
+    >
+      <span className={`inline-flex items-center gap-1 ${right ? "justify-end w-full" : ""}`}>
+        {label}
+        {active
+          ? dir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />
+          : <ArrowUpDown size={10} className="opacity-0 group-hover:opacity-40 transition-opacity" />}
+      </span>
+    </th>
+  );
+};
+
+const Td = ({ ch, right, dim, bold, color }) => (
+  <td className={`px-3 py-2 text-sm whitespace-nowrap ${right ? "text-right" : ""} ${dim ? "text-gray-500" : "text-gray-200"} ${bold ? "font-semibold" : ""} ${color || ""}`}>
+    {ch}
+  </td>
+);
+
+const Pager = ({ page, totalPages, go, total }) => (
+  <div className="flex items-center justify-between px-4 py-2.5 border-t border-gray-700/60 text-xs text-gray-500">
+    <span>{total.toLocaleString("es-CL")} registros · Pág {page + 1}/{totalPages}</span>
+    <div className="flex gap-0.5">
+      {[
+        [<ChevronsLeft size={13} />, () => go(0),             page === 0],
+        [<ChevronLeft  size={13} />, () => go(page - 1),      page === 0],
+        [<ChevronRight size={13} />, () => go(page + 1),      page >= totalPages - 1],
+        [<ChevronsRight size={13}/>, () => go(totalPages - 1), page >= totalPages - 1],
+      ].map(([icon, fn, dis], i) => (
+        <button key={i} onClick={fn} disabled={dis}
+          className="p-1.5 rounded hover:bg-gray-700 disabled:opacity-25 transition-colors">
+          {icon}
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+const SearchBar = ({ value, onChange, placeholder }) => (
+  <div className="relative flex-1 min-w-0">
+    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="w-full pl-9 pr-8 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-all"
+    />
+    {value && (
+      <button onClick={() => onChange("")}
+        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+        <X size={13} />
+      </button>
+    )}
+  </div>
+);
+
+
+// ═══════════════════════════════════════════════
+//  LOGO GESTAPACK (SVG oficial embebido)
+// ═══════════════════════════════════════════════
+
+const GestapackLogo = ({ height = 48 }) => {
+  // Proporción original: 652 × 292
+  const width = Math.round(height * 652 / 292);
+  return (
+    <svg width={width} height={height} viewBox="0 0 652 292" fill="none">
+
+<path d="M109.54 50.88C109.25 52.88 109.25 55.74 109.25 59.75C109.25 68.04 110.97 75.19 102.39 75.77C95.81 76.06 89.23 76.06 82.37 75.77C74.65 75.2 76.65 75.77 75.79 55.75C75.5 46.31 68.64 36.87 58.63 38.3C48.62 39.73 44.9 50.6 44.9 64.33V144.41C44.9 150.42 45.47 155.85 47.19 160.71C51.48 174.72 66.93 175.3 73.79 162.71C74.08 161.85 74.36 160.99 74.65 160.71C76.65 149.56 76.65 138.97 74.36 128.68C73.79 125.25 71.21 123.25 67.21 122.67C62.63 122.1 60.35 119.24 60.35 114.09C60.35 104.08 60.35 98.07 60.64 96.36C60.93 92.07 63.21 89.78 67.79 89.5C70.36 89.21 76.66 89.21 86.67 89.21C94.39 89.21 99.54 89.21 102.12 89.5C104.69 89.5 106.41 90.36 107.27 91.22C109.56 93.51 109.56 96.65 109.56 104.09C109.56 165.87 114.99 178.17 92.11 196.76C69.52 215.35 30.62 210.2 15.74 175.88C14.31 172.45 13.74 167.3 13.74 160.44V116.39L2.3 110.1C0.87 109.24 0.01 107.81 0.01 106.1C0.01 104.1 0.87 102.95 2.3 102.1L13.74 95.52C13.74 73.5 13.74 58.34 13.45 50.33C13.45 28.88 30.61 4.27998 56.64 4.56998H66.94C80.1 4.85998 91.25 10.58 100.12 22.02C106.98 31.17 110.13 40.61 109.56 50.91L109.54 50.88Z" fill="url(#paint0_linear_11_141)"/>
+<path d="M422.53 166.49C421.39 175.62 417.39 183.89 411.12 191.31C398.28 206.43 392.86 204.43 373.46 205.57C362.62 206.14 353.21 203.86 345.22 199.01C340.37 195.87 336.66 192.73 334.38 189.31C327.53 178.75 323.54 168.77 322.11 159.36C321.54 155.08 320.68 147.95 326.67 147.09C336.08 145.66 342.65 144.81 345.78 144.81C351.49 144.52 353.48 146.24 355.19 152.23C355.19 152.8 355.76 153.94 356.05 155.94C356.91 159.36 357.48 161.07 358.9 163.93C363.46 171.92 369.17 175.06 376.3 173.34C383.15 171.63 388.85 164.21 388.85 156.51C389.14 139.68 383.14 137.11 368.31 121.99L365.74 119.42L350.62 104.58L342.63 96.59C328.94 81.75 322.66 64.35 324.09 45.24C325.8 22.99 339.78 7.01001 358.04 2.45001C399.98 -8.10999 418.8 19.85 421.66 43.82C422.23 47.24 420.8 48.95 417.95 50.1C410.25 52.67 402.83 54.09 395.98 54.09C392.56 54.09 390.27 52.66 389.13 49.53L386.28 42.11C379.43 26.99 362.03 30.13 360.03 46.1C358.6 56.94 362.03 67.21 370.59 76.91C371.45 78.05 375.44 82.05 377.44 84.33L391.99 96.88C397.12 101.44 400.26 104.3 405.4 110.29C419.95 126.84 425.37 145.66 422.52 166.49H422.53Z" fill="url(#paint1_linear_11_141)"/>
+<path d="M528.32 19.29C528.32 25 528.32 29.27 528.03 31.56C528.03 34.13 527.46 35.84 526.6 36.98C524.32 38.98 520.32 38.98 515.19 38.98C509.48 38.98 503.49 38.69 500.07 42.12C496.65 45.26 496.93 50.11 496.93 61.23V188.18C496.93 198.45 497.79 205.01 490.94 205.58C483.52 205.87 476.39 205.87 469.54 205.58C462.12 205.29 463.26 198.45 463.26 189.89V58.37C463.26 48.67 463.26 44.96 460.69 42.11C457.84 38.97 452.13 38.97 446.43 38.97C443.29 38.97 441.01 38.97 439.87 38.68C434.16 38.39 432.17 36.97 431.88 31.26C431.59 25.27 431.59 18.71 431.88 12.15C431.88 9.86999 432.74 8.15999 433.59 7.29999C435.87 5.29999 439.3 5.86999 445.86 5.86999H514.33C527.74 5.86999 528.31 5.86999 528.31 19.28L528.32 19.29Z" fill="url(#paint2_linear_11_141)"/>
+<path d="M637.59 55.02V193.9C637.59 199.45 637.08 202.7 636.07 203.62C635.05 204.55 631.58 205.01 625.65 205.01H615.92C609.81 205.01 606.29 204.45 605.37 203.34C604.63 202.6 604.26 199.73 604.26 194.73V160.84C604.26 154.73 603.61 151.3 602.32 150.57C601.39 149.83 598.06 149.45 592.32 149.45H581.77C576.22 149.45 572.97 150.01 572.05 151.12C571.31 152.05 570.94 155.29 570.94 160.85V194.74C570.94 200.11 570.39 203.16 569.27 203.91C568.34 204.65 565.47 205.02 560.66 205.02H549.55C543.44 205.02 539.83 204.46 538.72 203.35C537.98 202.42 537.61 199.37 537.61 194.18V55.02C537.61 41.13 542.47 29.33 552.19 19.6C561.91 9.88002 573.71 5.02002 587.6 5.02002C601.49 5.02002 613.29 9.89002 623.02 19.6C632.74 29.33 637.6 41.13 637.6 55.02H637.59ZM570.93 55.02V104.74C570.93 110.3 571.3 113.54 572.04 114.47C572.97 115.58 576.48 116.14 582.59 116.14H593.15C598.7 116.14 601.94 115.68 602.87 114.75C603.79 113.83 604.26 110.59 604.26 105.03V55.03C604.26 50.41 602.64 46.47 599.4 43.23C596.16 39.99 592.22 38.37 587.59 38.37C582.96 38.37 579.03 39.99 575.79 43.23C572.55 46.47 570.93 50.41 570.93 55.03V55.02Z" fill="url(#paint3_linear_11_141)"/>
+<path d="M312.87 199.52C312.3 206.37 305.45 205.8 299.46 205.8H137.96C133.97 205.8 129.12 205.8 126.55 203.52C123.98 201.24 124.27 197.53 124.27 186.97V20.93C124.27 6.67003 124.56 6.10004 138.53 6.10004H299.74C306.3 6.10004 310.01 6.96004 311.44 8.10004C314.01 10.67 313.72 24.93 313.15 31.49C312.58 38.34 306.59 37.77 298.31 37.77H170.47C161.06 38.06 158.49 40.91 157.92 49.75C157.63 59.45 157.63 68.86 158.21 77.99C158.21 81.7 159.35 84.55 160.78 86.26C162.28 87.63 164.33 88.35 166.9 88.73C170.2 89.21 169.75 89.12 171.75 89.4C178.6 89.4 180.31 91.4 180.59 98.24C180.88 104.23 180.88 110.22 180.3 116.21C180.3 120.2 178.02 122.2 174.02 122.49C169.74 122.78 167.55 122.86 165.75 123.19C160.34 124.16 158.63 127.26 158.2 136.47C157.63 143.32 157.63 151.02 157.91 159.86C158.48 168.99 161.05 171.84 170.46 172.13H298.01C306.57 172.42 312.27 171.56 313.13 178.12C313.7 185.54 313.7 192.67 312.84 199.52H312.87Z" fill="url(#paint4_linear_11_141)"/>
+<path d="M637.59 117.93L649.03 124.22C650.46 125.08 651.32 126.51 651.32 128.22C651.32 130.22 650.46 131.37 649.03 132.22L637.59 138.8V117.92V117.93Z" fill="url(#paint5_linear_11_141)"/>
+<path d="M220.91 260.17C224.87 261.19 228.85 262.15 232.83 263.06C232.7 263.63 232.57 264.2 232.44 264.77C229.07 264 225.71 263.19 222.35 262.35C221.86 264.29 221.37 266.23 220.88 268.17C223.92 268.94 226.96 269.67 230.02 270.37C229.89 270.93 229.76 271.49 229.63 272.05C226.57 271.34 223.51 270.61 220.46 269.84C219.86 272.21 219.27 274.57 218.67 276.94C218.02 276.78 217.38 276.61 216.73 276.45C218.12 271.03 219.52 265.6 220.91 260.18V260.17Z" fill="url(#paint6_linear_11_141)"/>
+<path d="M234.7 272.13C234.7 272.13 234.7 272.1 234.71 272.08C235.72 267.56 240.03 264.36 245.09 265.37C250.15 266.38 252.87 270.92 252.07 275.48C252.07 275.5 252.07 275.51 252.07 275.53C251.27 280.09 246.95 283.46 241.66 282.4C236.37 281.34 233.7 276.64 234.71 272.12L234.7 272.13ZM250.05 275.22V275.17C250.74 271.41 248.52 267.84 244.7 267.08C240.88 266.32 237.51 268.73 236.7 272.46C236.7 272.48 236.7 272.49 236.69 272.51C235.88 276.24 238.08 279.91 242.04 280.7C246 281.48 249.37 278.97 250.05 275.22Z" fill="url(#paint7_linear_11_141)"/>
+<path d="M256.53 276.37C256.53 276.37 256.53 276.34 256.53 276.32C257.32 271.75 261.47 268.36 266.56 269.12C271.65 269.88 274.58 274.28 274 278.88C274 278.9 274 278.91 274 278.93C273.42 283.52 269.28 287.1 263.95 286.3C258.62 285.5 255.74 280.93 256.53 276.37ZM271.99 278.71C271.99 278.71 271.99 278.68 271.99 278.66C272.49 274.87 270.1 271.42 266.26 270.84C262.42 270.27 259.18 272.84 258.55 276.6C258.55 276.62 258.55 276.63 258.55 276.65C257.92 280.41 260.29 283.97 264.27 284.57C268.25 285.16 271.5 282.49 271.99 278.71Z" fill="url(#paint8_linear_11_141)"/>
+<path d="M280.26 271.24C282.21 271.47 284.16 271.69 286.12 271.89C291.41 272.44 294.77 276.35 294.39 281.06C294.39 281.08 294.39 281.09 294.39 281.11C294.01 285.82 289.89 289.18 284.37 288.6C282.34 288.39 280.32 288.16 278.3 287.92C278.96 282.36 279.61 276.8 280.27 271.23L280.26 271.24ZM281.96 273.2C281.46 277.6 280.96 282.01 280.46 286.41C281.82 286.56 283.18 286.71 284.54 286.86C288.96 287.32 292.03 284.69 292.35 280.99C292.35 280.97 292.35 280.96 292.35 280.94C292.67 277.23 290.19 274.08 285.92 273.64C284.6 273.5 283.27 273.36 281.95 273.21L281.96 273.2Z" fill="url(#paint9_linear_11_141)"/>
+<path d="M317.77 288.52C316.12 290.12 314.22 291.01 311.93 290.91C308.76 290.77 306.51 288.73 306.68 285.93C306.68 285.91 306.68 285.9 306.68 285.88C306.81 283.65 308.43 282.14 311.11 281.26C309.99 279.86 309.51 278.8 309.58 277.48C309.58 277.46 309.58 277.45 309.58 277.43C309.7 275.22 311.58 273.55 314.26 273.66C316.63 273.76 318.31 275.52 318.25 277.6C318.25 277.62 318.25 277.63 318.25 277.65C318.18 279.79 316.59 281.1 314.04 281.86C315.3 283.22 316.57 284.57 317.85 285.92C318.66 284.87 319.39 283.62 320.04 282.24C320.57 282.5 321.09 282.75 321.62 283C320.82 284.56 319.98 285.98 319 287.15C319.98 288.18 320.97 289.21 321.97 290.23C321.46 290.59 320.95 290.94 320.44 291.3C319.54 290.37 318.65 289.44 317.77 288.51V288.52ZM316.61 287.3C315.11 285.7 313.63 284.1 312.16 282.48C309.83 283.19 308.74 284.5 308.67 285.91C308.67 285.93 308.67 285.94 308.67 285.96C308.57 287.76 310 289.21 312.16 289.3C313.81 289.37 315.3 288.59 316.62 287.29L316.61 287.3ZM316.44 277.69C316.44 277.69 316.44 277.66 316.44 277.64C316.49 276.3 315.5 275.28 314.12 275.22C312.59 275.15 311.5 276.16 311.43 277.53C311.43 277.55 311.43 277.56 311.43 277.58C311.39 278.56 311.76 279.33 313 280.75C315.22 280.13 316.38 279.13 316.43 277.69H316.44Z" fill="url(#paint10_linear_11_141)"/>
+<path d="M334.03 288.7C334.44 288.23 334.84 287.77 335.25 287.3C337.08 288.88 338.84 289.65 341.27 289.61C343.62 289.57 345.15 288.32 345.1 286.67C345.1 286.65 345.1 286.64 345.1 286.62C345.06 285.06 344.17 284.2 340.52 283.52C336.53 282.74 334.71 281.49 334.7 278.73C334.7 278.71 334.7 278.7 334.7 278.68C334.7 276.04 337.04 274.09 340.25 274.04C342.72 274 344.5 274.65 346.26 275.97C345.9 276.47 345.54 276.97 345.18 277.47C343.56 276.24 341.98 275.72 340.23 275.75C338.02 275.78 336.62 276.99 336.63 278.5C336.63 278.52 336.63 278.53 336.63 278.55C336.64 280.13 337.53 281.03 341.33 281.75C345.18 282.49 347 283.8 347.08 286.37C347.08 286.39 347.08 286.4 347.08 286.42C347.18 289.3 344.72 291.25 341.22 291.31C338.43 291.36 336.13 290.49 334.03 288.69V288.7Z" fill="url(#paint11_linear_11_141)"/>
+<path d="M351.76 273.96C355.84 273.79 359.92 273.57 364 273.29C364.04 273.86 364.08 274.44 364.12 275.01C360.67 275.25 357.21 275.44 353.76 275.6C353.85 277.51 353.93 279.42 354.02 281.33C357.15 281.19 360.28 281.01 363.41 280.81C363.45 281.39 363.49 281.96 363.52 282.53C360.38 282.74 357.24 282.91 354.1 283.06C354.19 285.02 354.28 286.98 354.37 288.93C357.97 288.77 361.57 288.56 365.16 288.31C365.2 288.88 365.24 289.46 365.28 290.03C361.01 290.32 356.74 290.56 352.46 290.74C352.23 285.14 352 279.55 351.77 273.95L351.76 273.96Z" fill="url(#paint12_linear_11_141)"/>
+<path d="M369.12 272.91C371.54 272.72 373.97 272.5 376.39 272.27C378.46 272.07 380.19 272.52 381.37 273.45C382.28 274.17 382.89 275.29 383.04 276.6C383.04 276.62 383.04 276.63 383.04 276.65C383.35 279.42 381.56 281.26 378.89 282.01C380.88 284.11 382.9 286.2 384.95 288.27C384.14 288.36 383.33 288.45 382.53 288.53C380.61 286.55 378.71 284.55 376.83 282.54C375.18 282.7 373.54 282.84 371.89 282.98C372.07 285.15 372.26 287.32 372.44 289.49C371.78 289.55 371.12 289.6 370.46 289.65C370.01 284.07 369.57 278.48 369.12 272.9V272.91ZM377.03 280.81C379.62 280.56 381.32 279.07 381.09 276.93C381.09 276.91 381.09 276.9 381.09 276.88C380.87 274.83 379.14 273.76 376.41 274.02C374.67 274.19 372.92 274.34 371.18 274.49C371.37 276.75 371.56 279.02 371.75 281.28C373.51 281.13 375.28 280.97 377.04 280.8L377.03 280.81Z" fill="url(#paint13_linear_11_141)"/>
+<path d="M385.78 271.26C386.49 271.18 387.19 271.09 387.9 271.01C390.48 275.55 393.13 280.08 395.84 284.58C397.26 279.52 398.61 274.45 399.9 269.38C400.58 269.28 401.26 269.17 401.94 269.07C400.39 275.02 398.75 280.96 397.02 286.89C396.44 286.97 395.86 287.05 395.27 287.13C392.02 281.87 388.85 276.59 385.78 271.27V271.26Z" fill="url(#paint14_linear_11_141)"/>
+<path d="M406.57 268.33C407.2 268.23 407.83 268.12 408.46 268.01C409.39 273.53 410.33 279.05 411.26 284.58C410.61 284.69 409.95 284.8 409.3 284.91C408.39 279.38 407.48 273.86 406.57 268.33Z" fill="url(#paint15_linear_11_141)"/>
+<path d="M415.28 275.39C415.28 275.39 415.28 275.36 415.28 275.34C414.45 270.66 417.28 266.16 422.18 265.17C425.21 264.56 427.23 265.23 429.24 266.42C428.91 266.97 428.57 267.51 428.24 268.06C426.54 267.05 424.77 266.44 422.5 266.9C418.8 267.65 416.57 271.13 417.27 274.93C417.27 274.95 417.27 274.96 417.27 274.98C417.97 278.8 421.42 281.27 425.23 280.5C427.6 280.02 428.97 278.82 430.29 276.97C430.8 277.28 431.31 277.59 431.82 277.89C430.41 280.01 428.67 281.59 425.52 282.22C420.5 283.23 416.12 280.13 415.28 275.38V275.39Z" fill="url(#paint16_linear_11_141)"/>
+<path d="M433.24 263.1C437.25 262.19 441.24 261.22 445.23 260.2C445.37 260.76 445.52 261.32 445.66 261.87C442.28 262.74 438.9 263.56 435.51 264.35C435.94 266.21 436.37 268.08 436.81 269.94C439.88 269.23 442.95 268.48 446.01 267.71C446.15 268.27 446.29 268.83 446.44 269.39C443.37 270.17 440.29 270.92 437.21 271.63C437.65 273.54 438.1 275.45 438.54 277.36C442.07 276.54 445.6 275.68 449.11 274.78C449.25 275.34 449.4 275.9 449.54 276.45C445.36 277.52 441.18 278.54 436.98 279.49C435.74 274.03 434.49 268.57 433.25 263.11L433.24 263.1Z" fill="url(#paint17_linear_11_141)"/>
+<path d="M214.67 94.72V99.89C214.57 102.48 213.78 104.79 212.29 106.83C210.81 108.87 208.83 110.34 206.37 111.24C205.59 111.54 204.5 111.72 203.09 111.77C201.3 111.79 200.19 111.85 199.73 111.92C198.47 112.1 197.77 112.83 197.62 114.11C197.57 114.51 197.54 115.32 197.54 116.52C197.54 124.87 197.54 128.95 197.54 128.74C197.51 130.15 197.33 131.02 196.97 131.34C196.64 131.69 195.76 131.88 194.33 131.91C192.77 131.93 191.35 131.9 190.07 131.8C189.16 131.72 188.65 131.21 188.52 130.25C188.44 129.75 188.41 129.03 188.41 128.1V81.43C188.41 79.54 188.59 78.43 188.94 78.07C189.29 77.72 190.45 77.54 192.41 77.54C193.57 77.52 195.04 77.5 196.82 77.5C199.39 77.52 200.86 77.54 201.23 77.54C203.57 77.54 205.83 78.04 208.02 79.05C212.02 80.94 214.22 84.22 214.62 88.9V94.71H214.66L214.67 94.72ZM197.61 94.72V100.83C197.69 102.06 198.39 102.79 199.72 103.02C201.2 103.27 202.56 102.97 203.79 102.11C205 101.23 205.71 100.04 205.94 98.53C206.29 95.89 206.25 93.46 205.83 91.25C205.3 88.51 203.6 87.02 200.74 86.8C198.73 86.65 197.67 87.57 197.57 89.55V94.72H197.61Z" fill="url(#paint18_linear_11_141)"/>
+<path d="M232.38 77.67H236.04C236.87 77.72 237.44 77.87 237.74 78.12C238.04 78.37 238.31 78.93 238.53 79.78C238.63 80.16 238.73 80.66 238.83 81.29C239.58 85.74 240.88 93.4 242.72 104.27C244.35 114.05 245.64 121.71 246.57 127.25C246.97 129.51 246.88 130.91 246.31 131.44C245.91 131.79 244.73 131.95 242.76 131.93C240.85 131.91 239.73 131.88 239.4 131.85C238.67 131.8 238.16 131.62 237.85 131.32C237.55 131.04 237.33 130.54 237.21 129.81C237.13 129.21 237.01 128.3 236.83 127.09C236.68 125.88 236.55 124.98 236.45 124.37C236.4 123.99 236.22 123.1 235.92 121.69C235.64 120.46 234.84 119.82 233.51 119.77C233.16 119.75 232.96 119.73 232.91 119.73C230.87 119.71 229.6 119.86 229.1 120.18C228.42 120.63 227.97 121.85 227.74 123.84C227.69 124.42 227.33 126.52 226.65 130.14C226.42 131.22 225.78 131.78 224.73 131.8C222.34 131.88 220.32 131.88 218.66 131.8C217.58 131.75 217.06 131.13 217.11 129.95C217.13 129.65 217.24 128.94 217.41 127.84C219.09 117.8 220.21 111.19 220.77 108C223.76 90.49 225.32 81.39 225.45 80.69C225.65 79.38 225.99 78.54 226.47 78.16C226.92 77.81 227.78 77.63 229.04 77.63H232.4V77.67H232.38ZM232.19 110.98C233.55 110.98 234.28 110.7 234.38 110.15C234.43 110 234.4 109.56 234.3 108.83C234.2 108.15 234.02 107.13 233.77 105.77C233.49 104.13 233.34 103.26 233.32 103.13C233.27 102.78 233.13 102.4 232.91 102C232.63 101.55 232.31 101.37 231.93 101.47C231.6 101.55 231.38 101.72 231.25 102C230.67 103.48 230.24 105.85 229.97 109.09C229.94 109.52 229.93 109.86 229.93 110.11C229.93 110.71 230.68 111 232.19 110.98Z" fill="url(#paint19_linear_11_141)"/>
+<path d="M252.79 104.64C252.81 95.53 252.8 90.61 252.75 89.85C252.65 87.46 253.33 85.17 254.79 82.98C256.32 80.72 258.34 79.11 260.83 78.15C261.79 77.8 262.67 77.62 263.47 77.62C265.68 77.6 267.29 77.6 268.3 77.62C269 77.64 269.7 77.77 270.37 78C272.28 78.65 274.51 80.49 277.05 83.51C278.21 84.89 278.8 86.78 278.82 89.17C278.87 91.66 278.87 93.47 278.82 94.6C278.79 95.51 278.62 96.12 278.29 96.45C277.96 96.75 277.33 96.92 276.4 96.94C274.79 96.99 273.18 96.98 271.57 96.9C270.51 96.82 269.93 96.25 269.83 95.16C269.83 95.18 269.79 93.98 269.72 91.54C269.67 90.11 269.2 88.91 268.32 87.96C267.51 87.08 266.58 86.64 265.53 86.64C264.48 86.64 263.54 87.08 262.74 87.96C261.96 88.81 261.52 89.81 261.42 90.94C261.34 91.59 261.31 92.4 261.31 93.35V115.72C261.31 116.8 261.37 117.81 261.5 118.74C261.63 119.72 261.93 120.56 262.41 121.27C263.14 122.35 264.09 122.93 265.28 123.01C266.46 123.09 267.49 122.65 268.37 121.69C269.25 120.71 269.7 119.5 269.73 118.07V115.96C269.75 115.11 269.78 114.4 269.81 113.85C269.86 113 270.02 112.42 270.3 112.11C270.6 111.78 271.15 111.61 271.96 111.58C273.59 111.5 275.3 111.52 277.09 111.62C278.17 111.67 278.74 112.25 278.79 113.36C278.99 117.66 278.95 120.58 278.68 122.11C277.65 127.47 274.55 130.81 269.4 132.15C263.36 133.71 258.36 131.8 254.38 126.42C253.27 124.91 252.74 122.9 252.8 120.38V104.65L252.79 104.64Z" fill="url(#paint20_linear_11_141)"/>
+<path d="M285.12 104.98V82.19C285.12 81.03 285.16 80.13 285.23 79.47C285.33 78.49 285.86 77.97 286.81 77.92C288.52 77.84 290.23 77.84 291.94 77.92C292.87 77.97 293.4 78.49 293.52 79.47C293.6 79.95 293.63 80.65 293.63 81.58V84.64C293.63 85.87 293.64 86.88 293.67 87.66C293.67 88.47 293.77 89.26 293.97 90.04C294.05 90.42 294.27 90.66 294.65 90.76C295.03 90.86 295.37 90.78 295.67 90.53C296.12 90.18 296.63 89.44 297.18 88.3C297.63 87.42 298.25 86.2 299.03 84.64C299.91 82.9 300.53 81.68 300.88 80.98C301.31 80.15 301.65 79.52 301.9 79.09C302.3 78.39 302.86 78.01 303.56 77.96C306.4 77.73 308.93 77.73 311.14 77.96C311.42 77.98 311.62 78.11 311.74 78.34C311.87 78.57 311.87 78.82 311.74 79.09C311.49 79.72 311.15 80.46 310.72 81.32C310.39 81.97 307.9 86.94 303.25 96.22C302.5 97.7 302.18 98.35 302.31 98.14C301.68 99.27 301.63 100.43 302.16 101.61C302.74 102.87 303.4 104.45 304.16 106.36C306.85 112.95 309.82 120.26 313.06 128.28C313.34 128.96 313.56 129.64 313.74 130.32C313.82 130.62 313.76 130.91 313.59 131.19C313.41 131.47 313.18 131.63 312.87 131.68C312.29 131.78 311.69 131.84 311.06 131.87C310.83 131.87 310.13 131.86 308.95 131.83C308.07 131.83 307.35 131.85 306.8 131.91C304.69 132.06 303.25 131.06 302.5 128.89C302.42 128.64 301.85 127.13 300.76 124.36C298.92 119.66 297.86 116.93 297.55 116.17C297.12 115.04 296.68 114.25 296.23 113.79C296.03 113.56 295.76 113.46 295.44 113.49C295.11 113.49 294.84 113.62 294.61 113.87C294.01 114.57 293.69 115.61 293.67 116.96C293.67 116.86 293.66 119.4 293.63 124.58C293.63 127.55 293.62 129.26 293.59 129.71C293.54 130.46 293.38 130.99 293.1 131.29C292.8 131.59 292.28 131.77 291.55 131.82C290.02 131.87 288.49 131.86 286.99 131.78C286.36 131.76 285.91 131.59 285.63 131.29C285.38 131.01 285.23 130.52 285.18 129.82C285.13 129.37 285.1 128.46 285.1 127.1V104.95L285.12 104.98Z" fill="url(#paint21_linear_11_141)"/>
+<defs>
+<linearGradient id="paint0_linear_11_141" x1="55.0876" y1="-218.295" x2="55.0876" y2="256.136" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint1_linear_11_141" x1="372.5" y1="-225.671" x2="372.5" y2="255.068" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint2_linear_11_141" x1="480.01" y1="-213.988" x2="480.01" y2="253.888" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint3_linear_11_141" x1="587.624" y1="-214.76" x2="587.624" y2="253.11" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint4_linear_11_141" x1="218.935" y1="-213.363" x2="218.935" y2="253.832" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint5_linear_11_141" x1="644.458" y1="94.9749" x2="644.458" y2="143.821" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint6_linear_11_141" x1="224.783" y1="241.741" x2="224.783" y2="280.972" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint7_linear_11_141" x1="243.357" y1="246.048" x2="243.357" y2="286.783" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint8_linear_11_141" x1="265.24" y1="249.893" x2="265.24" y2="290.596" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint9_linear_11_141" x1="286.363" y1="252.071" x2="286.363" y2="292.857" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint10_linear_11_141" x1="314.323" y1="254.265" x2="314.323" y2="295.543" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint11_linear_11_141" x1="340.559" y1="255.056" x2="340.559" y2="295.466" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint12_linear_11_141" x1="358.523" y1="254.114" x2="358.523" y2="294.936" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint13_linear_11_141" x1="377.038" y1="253.073" x2="377.038" y2="293.84" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint14_linear_11_141" x1="393.863" y1="249.224" x2="393.863" y2="291.473" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint15_linear_11_141" x1="408.916" y1="249.439" x2="408.916" y2="288.974" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint16_linear_11_141" x1="423.481" y1="245.742" x2="423.481" y2="286.612" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint17_linear_11_141" x1="441.393" y1="239.002" x2="441.393" y2="284.128" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint18_linear_11_141" x1="201.545" y1="17.7024" x2="201.545" y2="145" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint19_linear_11_141" x1="231.967" y1="17.9578" x2="231.967" y2="144.988" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint20_linear_11_141" x1="265.833" y1="17.0874" x2="265.833" y2="145.918" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+<linearGradient id="paint21_linear_11_141" x1="299.443" y1="18.2961" x2="299.443" y2="144.942" gradientUnits="userSpaceOnUse">
+<stop stopColor="#E7CC94"/>
+<stop offset="0.21" stopColor="#C6A873"/>
+<stop offset="0.43" stopColor="#A78754"/>
+<stop offset="0.64" stopColor="#916F3E"/>
+<stop offset="0.83" stopColor="#846031"/>
+<stop offset="1" stopColor="#805C2D"/>
+</linearGradient>
+</defs>
+    </svg>
+  );
+};
+
+
+
+// ── Fondo marca de agua (logo centrado, baja opacidad) ──────────────────────
+const LogoBg = () => (
+  <div style={{
+    position:      "fixed",
+    inset:         0,
+    display:       "flex",
+    alignItems:    "center",
+    justifyContent:"center",
+    zIndex:        0,
+    pointerEvents: "none",
+    overflow:      "hidden",
+  }}>
+    <div style={{ opacity: 0.20 }}>
+      <GestapackLogo height={280} />
+    </div>
+  </div>
+);
+
+// ═══════════════════════════════════════════════
+//  UPLOAD SCREEN (enrutador universal)
+// ═══════════════════════════════════════════════
+
+const UploadScreen = ({ onFiles, loading, detected, hasData, onBack }) => {
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef();
+  const onDrop = (e) => { e.preventDefault(); setDragging(false); onFiles(e.dataTransfer.files); };
+
+  const ROUTES = [
+    { key: "ventas",  label: "Reporte Ventas",      hint: "contiene «ventas»",        icon: <TrendingUp   size={13} /> },
+    { key: "guias",   label: "Compras Clientes",     hint: "contiene «guiasdespacho»", icon: <ShoppingCart size={13} /> },
+    { key: "compras", label: "Proveedores",          hint: "contiene «compras»",       icon: <Package      size={13} /> },
+    { key: "precios", label: "Optimizador Precios",  hint: "cualquier otro archivo",   icon: <DollarSign   size={13} /> },
+  ];
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-6 gap-6"
+      style={{ background: "#000", position: "relative" }}>
+      <LogoBg />
+      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "24px", width: "100%" }}>
+
+
+      {/* Title */}
+      <p className="text-xs tracking-widest uppercase" style={{ color: "#8a6520" }}>
+        Dashboard Comercial
+      </p>
+
+      {/* Drop zone */}
+      <div
+        onDrop={onDrop}
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onClick={() => inputRef.current?.click()}
+        className="w-full max-w-lg border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all select-none"
+        style={{
+          borderColor: dragging ? "#c88d31" : "#2a2a2a",
+          background:  dragging ? "rgba(200,141,49,0.05)" : "rgba(10,10,10,0.8)",
+        }}
+      >
+        {loading
+          ? <div className="flex flex-col items-center gap-3">
+              <Loader2 size={36} className="animate-spin" style={{ color: "#c88d31" }} />
+              <p className="font-medium" style={{ color: "#c88d31" }}>Procesando archivos…</p>
+            </div>
+          : <div className="flex flex-col items-center gap-3">
+              <Upload size={36} style={{ color: "#5a4010" }} />
+              <p className="font-semibold text-lg" style={{ color: "#c88d31" }}>
+                Arrastra todos tus archivos aquí
+              </p>
+              <p className="text-sm" style={{ color: "#5a4010" }}>
+                CSV · XLSX — se distribuyen automáticamente por pestaña
+              </p>
+            </div>}
+        <input ref={inputRef} type="file" multiple accept=".csv,.xlsx,.xls"
+          className="hidden" onChange={(e) => onFiles(e.target.files)} />
+      </div>
+
+      {/* Routing legend */}
+      <div className="grid grid-cols-2 gap-2 w-full max-w-lg">
+        {ROUTES.map((r) => {
+          const isDetected = r.key === "precios"
+            ? (detected.preciosCount || 0) > 0
+            : !!detected[r.key];
+          return (
+            <div key={r.key}
+              className="rounded-xl p-3 text-xs flex items-start gap-2 transition-all"
+              style={{
+                border:     isDetected ? "1px solid rgba(200,141,49,0.5)" : "1px solid #1a1a1a",
+                background: isDetected ? "rgba(200,141,49,0.06)" : "rgba(8,8,8,0.9)",
+              }}>
+              <span className="shrink-0 mt-0.5" style={{ color: isDetected ? "#c88d31" : "#3a3a3a" }}>
+                {r.icon}
+              </span>
+              <div className="min-w-0">
+                <p className="font-semibold truncate"
+                  style={{ color: isDetected ? "#c88d31" : "#444" }}>
+                  {r.label}
+                </p>
+                <p className="mt-0.5 truncate" style={{ color: isDetected ? "#8a6020" : "#2a2a2a" }}>
+                  {r.key === "precios" && detected.preciosCount
+                    ? `${detected.preciosCount} archivo(s) enrutado(s)`
+                    : (detected[r.key] || r.hint)}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Back button — sólo visible cuando ya hay datos cargados */}
+      {hasData && (
+        <button
+          onClick={onBack}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+          style={{
+            background: "rgba(200,141,49,0.12)",
+            border: "1px solid rgba(200,141,49,0.4)",
+            color: "#c88d31",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(200,141,49,0.22)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(200,141,49,0.12)";
+          }}
+        >
+          <ChevronLeft size={15} />
+          Volver al Dashboard
+        </button>
+      )}
+
+      <p className="text-xs text-center max-w-md" style={{ color: "#2a2a2a" }}>
+        Archivos detectados por nombre · Se distribuyen automáticamente ·
+        Los datos existentes se conservan al agregar nuevos archivos
+      </p>
+      </div>{/* end z-index wrapper */}
+    </div>
+  );
+};
+
+
+// ═══════════════════════════════════════════════
+//  COMPRA MODAL (Tab 3)
+// ═══════════════════════════════════════════════
+
+const CompraModal = ({ folio, allRows, onClose }) => {
+  const items = useMemo(
+    () => allRows.filter((r) => String(r.folio) === String(folio)),
+    [folio, allRows]
+  );
+  const total     = items.reduce((s, r) => s + r.total, 0);
+  const proveedor = items[0]?.proveedor || "";
+  const fecha     = items[0]?.fecha ? fmtDate(items[0].fecha) : "";
+
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
+          <div>
+            <h2 className="font-bold text-white text-base">Folio #{folio}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{proveedor} · {fecha} · {items.length} ítem{items.length !== 1 ? "s" : ""}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          <table className="w-full">
+            <thead className="bg-gray-800/60 sticky top-0">
+              <tr><Th ch="Producto" /><Th ch="Cantidad" right /><Th ch="Precio Un." right /><Th ch="Total" right /></tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {items.map((r, i) => (
+                <tr key={i} className="hover:bg-gray-800/30">
+                  <td className="px-3 py-2.5 text-sm text-gray-200">{r.producto}</td>
+                  <Td ch={fmt(r.cantidad, 2)} right dim />
+                  <Td ch={"$" + fmtM(r.precioUn)} right />
+                  <Td ch={"$" + fmtM(r.total)} right bold color="text-purple-300" />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-5 py-3.5 border-t border-gray-700 flex items-center justify-between bg-gray-800/30 rounded-b-2xl">
+          <div className="text-sm">
+            <span className="text-gray-400">Total Factura: </span>
+            <span className="font-bold text-purple-300 text-base">${fmtM(total)}</span>
+          </div>
+          <button onClick={onClose} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════
+//  TAB 1 — VENTAS
+// ═══════════════════════════════════════════════
+
+const calcP = (rows) => {
+  const venta   = rows.reduce((s, r) => s + r.venta,   0);
+  const contrib = rows.reduce((s, r) => s + r.contrib, 0);
+  return { venta, contrib, margen: venta > 0 ? (contrib / venta) * 100 : 0 };
+};
+
+const PCOLS = [
+  { k: "week",    l: "Semana"     },
+  { k: "month",   l: "Mes Cal."   },
+  { k: "roll30",  l: "30 Días"    },
+  { k: "quarter", l: "Trim. Cal." },
+  { k: "roll90",  l: "90 Días"    },
+];
+
+const VentasTab = ({ data }) => {
+  const [search,  setSearch]  = useState("");
+  const [metric,  setMetric]  = useState("venta");
+  const [showTop, setShowTop] = useState("venta");
+
+  const mainSort = useSort("totalV", "desc");
+  const topSort  = useSort(null,     "desc");
+  const skuSort  = useSort("venta",  "desc");
+
+  const rows = useMemo(() =>
+    data.map((r) => ({
+      cliente:  col(r, "Razón Social", "Razon Social"),
+      fecha:    parseDate(col(r, "Fecha")),
+      producto: col(r, "Producto"),
+      venta:    parseNum(col(r, "Total Línea",    "Total Linea")),
+      contrib:  parseNum(col(r, "Margen Contrib $")),
+    })).filter((r) => r.fecha && r.cliente),
+  [data]);
+
+  const refDate = useMemo(() => {
+    if (!rows.length) return new Date();
+    return new Date(Math.max(...rows.map((r) => r.fecha.getTime())));
+  }, [rows]);
+
+  const P = useMemo(() => getPeriods(refDate), [refDate]);
+
+  const clientMap = useMemo(() => {
+    const m = {};
+    rows.forEach((r) => {
+      if (!r.cliente) return;
+      if (!m[r.cliente]) m[r.cliente] = { rows: [], skus: new Set() };
+      m[r.cliente].rows.push(r);
+      if (r.producto) m[r.cliente].skus.add(r.producto);
+    });
+    return m;
+  }, [rows]);
+
+  const globals = useMemo(() => {
+    const f   = (a, b) => rows.filter((r) => inR(r.fecha, a, b));
+    const r90 = f(P.roll90Start, P.today);
+    return {
+      week:    calcP(f(P.weekStart,  P.weekEnd)),
+      month:   calcP(f(P.monthStart, P.monthEnd)),
+      roll30:  calcP(f(P.roll30Start, P.today)),
+      quarter: calcP(f(P.qStart,     P.qEnd)),
+      roll90:  { ...calcP(r90), skus: new Set(r90.map((r) => r.producto).filter(Boolean)).size },
+    };
+  }, [rows, P]);
+
+  const summaries = useMemo(() => {
+    return Object.entries(clientMap).map(([cliente, c]) => {
+      const f = (a, b) => c.rows.filter((r) => inR(r.fecha, a, b));
+      const build = (a, b, g) => {
+        const p = calcP(f(a, b));
+        return { ...p, ppv: g.venta > 0 ? (p.venta / g.venta) * 100 : 0, ppc: g.contrib > 0 ? (p.contrib / g.contrib) * 100 : 0 };
+      };
+      const totalV = c.rows.reduce((s, r) => s + r.venta,   0);
+      const totalC = c.rows.reduce((s, r) => s + r.contrib, 0);
+      return {
+        cliente, skus: c.skus.size,
+        week:    build(P.weekStart,  P.weekEnd,  globals.week),
+        month:   build(P.monthStart, P.monthEnd, globals.month),
+        roll30:  build(P.roll30Start, P.today,   globals.roll30),
+        quarter: build(P.qStart,     P.qEnd,     globals.quarter),
+        roll90:  build(P.roll90Start, P.today,   globals.roll90),
+        totalV, totalC, rows: c.rows,
+      };
+    }).sort((a, b) => b.totalV - a.totalV);
+  }, [clientMap, P, globals]);
+
+  const top20V = useMemo(() => summaries.slice(0, 20), [summaries]);
+  const top20C = useMemo(() => [...summaries].sort((a, b) => b.totalC - a.totalC).slice(0, 20), [summaries]);
+  const topBase = showTop === "venta" ? top20V : top20C;
+
+  const sortedTop = useMemo(() => {
+    if (!topSort.key) return topBase;
+    return applySort(topBase, topSort.key, topSort.dir, (c, k) => {
+      if (k === "cliente") return c.cliente.toLowerCase();
+      if (k === "total")   return showTop === "venta" ? c.totalV : c.totalC;
+      if (k === "margen")  return c.totalV > 0 ? (c.totalC / c.totalV) * 100 : 0;
+      if (k === "skus")    return c.skus;
+      return 0;
+    });
+  }, [topBase, topSort.key, topSort.dir, showTop]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return summaries;
+    const q = search.toLowerCase();
+    return summaries.filter((c) => c.cliente.toLowerCase().includes(q));
+  }, [summaries, search]);
+
+  const mainAccessor = useCallback((c, sk) => {
+    if (sk === "cliente") return c.cliente.toLowerCase();
+    if (sk === "skus")    return c.skus;
+    for (const { k } of PCOLS) {
+      if (sk === k) {
+        if (metric === "venta")   return c[k].venta;
+        if (metric === "contrib") return c[k].contrib;
+        return c[k].margen;
+      }
+      if (sk === k + "_p") return metric === "venta" ? c[k].ppv : c[k].ppc;
+    }
+    return 0;
+  }, [metric]);
+
+  const sortedFiltered = useMemo(
+    () => applySort(filtered, mainSort.key, mainSort.dir, mainAccessor),
+    [filtered, mainSort.key, mainSort.dir, mainAccessor]
+  );
+
+  const clientDetail = useMemo(() => {
+    if (!search.trim() || filtered.length !== 1) return null;
+    const c = filtered[0];
+    const skuMap = {}; const byWeek = {};
+    c.rows.forEach((r) => {
+      const k = r.producto || "(sin nombre)";
+      if (!skuMap[k]) skuMap[k] = { sku: k, venta: 0, contrib: 0 };
+      skuMap[k].venta   += r.venta;
+      skuMap[k].contrib += r.contrib;
+      const ws = getWeekStart(r.fecha); const wk = ws.toISOString().slice(0, 10);
+      if (!byWeek[wk]) byWeek[wk] = { label: fmtDate(ws), venta: 0, contrib: 0 };
+      byWeek[wk].venta += r.venta; byWeek[wk].contrib += r.contrib;
+    });
+    return {
+      ...c,
+      skuBreakdown: Object.values(skuMap).map((s) => ({ ...s, margen: s.venta > 0 ? (s.contrib / s.venta) * 100 : 0 })),
+      trend: Object.values(byWeek).sort((a, b) => a.label.localeCompare(b.label)).slice(-16),
+    };
+  }, [filtered, search]);
+
+  const sortedSKUs = useMemo(() => {
+    if (!clientDetail) return [];
+    return applySort(clientDetail.skuBreakdown, skuSort.key, skuSort.dir, (s, k) => {
+      if (k === "sku") return s.sku.toLowerCase();
+      return s[k] ?? 0;
+    });
+  }, [clientDetail, skuSort.key, skuSort.dir]);
+
+  const { page, go, totalPages, slice, total } = usePag(sortedFiltered);
+  const getCellVal = (c, pk) => {
+    const p = c[pk];
+    if (metric === "venta")   return "$" + fmtM(p.venta);
+    if (metric === "contrib") return "$" + fmtM(p.contrib);
+    return fmtPct(p.margen);
+  };
+  const STHtop  = (props) => <SortTh {...props} currentKey={topSort.key}  dir={topSort.dir}  onSort={topSort.toggle}  />;
+  const STHmain = (props) => <SortTh {...props} currentKey={mainSort.key} dir={mainSort.dir} onSort={mainSort.toggle} />;
+  const STHsku  = (props) => <SortTh {...props} currentKey={skuSort.key}  dir={skuSort.dir}  onSort={skuSort.toggle}  />;
+
+  return (
+    <div className="space-y-5">
+      {/* KPIs */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+        <Card label="Venta Trim. Cal."    value={"$" + fmtM(globals.quarter.venta)}   sub={rows.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300" />
+        <Card label="Contrib. Trim. Cal." value={"$" + fmtM(globals.quarter.contrib)} sub={"Margen: " + fmtPct(globals.quarter.margen)} color="text-emerald-300" />
+        <Card label="Margen % 90 días"    value={fmtPct(globals.roll90.margen)}        sub={"Contrib: $" + fmtM(globals.roll90.contrib)} color="text-yellow-300" />
+        <Card label="SKUs únicos 90 días" value={globals.roll90.skus}                  sub="Productos distintos" color="text-pink-300" />
+        <Card label="Clientes Activos"    value={summaries.filter((c) => c.quarter.venta > 0).length} sub="En trim. cal." />
+        <Card label="Fecha Referencia"    value={fmtDate(refDate)} sub="Último movimiento" />
+      </div>
+
+      {/* Top 20 */}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <div className="flex items-center gap-2"><Award size={16} className="text-yellow-400" /><span className="font-semibold text-white">Top 20 Clientes</span></div>
+          <div className="flex gap-1">
+            {[["venta", "Por Venta"], ["contrib", "Por Contribución"]].map(([k, l]) => (
+              <button key={k} onClick={() => setShowTop(k)}
+                className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${showTop === k ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40" : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"}`}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-800/60">
+              <tr>
+                <Th ch="#" />
+                <STHtop label="Cliente"                                                 sk="cliente" />
+                <STHtop label={showTop === "venta" ? "Venta Total" : "Contrib. Total"} sk="total"   right />
+                <STHtop label="Margen %"                                                sk="margen"  right />
+                <STHtop label="SKUs"                                                    sk="skus"    right />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {sortedTop.map((c, i) => (
+                <tr key={c.cliente} className="hover:bg-gray-800/40 transition-colors">
+                  <Td ch={i + 1} bold color={i < 3 ? "text-yellow-400" : "text-gray-600"} />
+                  <td className="px-3 py-2 text-sm text-gray-200 max-w-xs"><span className="block truncate">{c.cliente}</span></td>
+                  <Td ch={"$" + fmtM(showTop === "venta" ? c.totalV : c.totalC)} right bold />
+                  <Td ch={fmtPct(c.totalV > 0 ? (c.totalC / c.totalV) * 100 : 0)} right color="text-emerald-400" />
+                  <Td ch={c.skus} right dim />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Search + metric selector */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar cliente para ver detalle o filtrar listado…" />
+        <div className="flex gap-1 shrink-0">
+          {[["venta", "Venta Neta"], ["contrib", "Contribución"], ["margen", "Margen %"]].map(([k, l]) => (
+            <button key={k} onClick={() => setMetric(k)}
+              className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all ${metric === k ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Client detail */}
+      {clientDetail && (
+        <div className="space-y-4 border border-blue-800/50 bg-blue-950/10 rounded-2xl p-4">
+          <div className="flex items-center gap-2">
+            <Info size={15} className="text-blue-400 shrink-0" />
+            <span className="text-sm font-bold text-white truncate">{clientDetail.cliente}</span>
+            <span className="text-xs text-gray-500 shrink-0">— Vista detallada</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Card label="Venta Total"       value={"$" + fmtM(clientDetail.totalV)} color="text-blue-300" />
+            <Card label="Contribución Total" value={"$" + fmtM(clientDetail.totalC)} color="text-emerald-300" />
+            <Card label="Margen % Total"
+              value={fmtPct(clientDetail.totalV > 0 ? (clientDetail.totalC / clientDetail.totalV) * 100 : 0)}
+              sub={clientDetail.skus + " SKUs distintos"} color="text-yellow-300" />
+          </div>
+          {clientDetail.trend.length > 1 && (
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
+              <p className="text-xs text-gray-400 mb-3 uppercase tracking-wide">Tendencia semanal</p>
+              <ResponsiveContainer width="100%" height={100}>
+                <LineChart data={clientDetail.trend} margin={{ top: 2, right: 8, bottom: 0, left: 0 }}>
+                  <XAxis dataKey="label" tick={{ fontSize: 9, fill: "#6B7280" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 9, fill: "#6B7280" }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                  <Tooltip formatter={(v, name) => ["$" + fmtM(v), name === "venta" ? "Venta" : "Contrib."]}
+                    contentStyle={{ backgroundColor: "#111827", border: "1px solid #374151", borderRadius: 8, fontSize: 11 }}
+                    labelStyle={{ color: "#9CA3AF" }} />
+                  <Line type="monotone" dataKey="venta"   stroke="#3B82F6" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="contrib" stroke="#10B981" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="flex gap-4 mt-1 text-xs text-gray-500">
+                <span><span className="inline-block w-3 h-0.5 bg-blue-500 mr-1 align-middle" />Venta</span>
+                <span><span className="inline-block w-3 h-0.5 bg-emerald-500 mr-1 align-middle" />Contribución</span>
+              </div>
+            </div>
+          )}
+          <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-gray-700 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+              Apertura por SKU — {clientDetail.skuBreakdown.length} productos
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-800/60">
+                  <tr>
+                    <STHsku label="Producto / SKU" sk="sku"    />
+                    <STHsku label="Venta Neta"      sk="venta"   right />
+                    <STHsku label="Contribución"    sk="contrib" right />
+                    <STHsku label="Margen %"        sk="margen"  right />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800/60">
+                  {sortedSKUs.map((s, i) => (
+                    <tr key={i} className="hover:bg-gray-800/30">
+                      <td className="px-3 py-2 text-sm text-gray-200 max-w-xs"><span className="block truncate" title={s.sku}>{s.sku}</span></td>
+                      <Td ch={"$" + fmtM(s.venta)}  right />
+                      <Td ch={"$" + fmtM(s.contrib)} right color="text-emerald-400" />
+                      <Td ch={fmtPct(s.margen)} right color={s.margen > 15 ? "text-emerald-300" : s.margen > 0 ? "text-yellow-300" : "text-red-400"} />
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* General table */}
+      {!clientDetail && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/60">
+                <tr>
+                  <STHmain label="Cliente" sk="cliente" />
+                  <STHmain label="SKUs"    sk="skus"    right />
+                  {PCOLS.map((pc) => <STHmain key={pc.k} label={pc.l} sk={pc.k} right />)}
+                  {metric !== "margen" && PCOLS.map((pc) => <STHmain key={pc.k + "_p"} label={"Part% " + pc.l.split(".")[0]} sk={pc.k + "_p"} right />)}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/60">
+                {slice.map((c) => (
+                  <tr key={c.cliente} className="hover:bg-gray-800/40 transition-colors">
+                    <td className="px-3 py-2 text-sm font-medium text-white max-w-xs"><span className="block truncate" title={c.cliente}>{c.cliente}</span></td>
+                    <Td ch={c.skus} right dim />
+                    {PCOLS.map((pc) => <Td key={pc.k} ch={getCellVal(c, pc.k)} right color={metric === "margen" && c[pc.k].margen > 0 ? "text-emerald-300" : ""} />)}
+                    {metric !== "margen" && PCOLS.map((pc) => <Td key={pc.k + "_p"} ch={metric === "venta" ? fmtPct(c[pc.k].ppv) : fmtPct(c[pc.k].ppc)} right dim />)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} totalPages={totalPages} go={go} total={total} />
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════
+//  TAB 2 — GUIAS
+// ═══════════════════════════════════════════════
+
+const GuiasTab = ({ data }) => {
+  const [search, setSearch] = useState("");
+  const guiSort = useSort("fecha", "desc");
+
+  const rows = useMemo(() =>
+    data.map((r) => ({
+      cliente:  col(r, "Razón Social", "Razon Social"),
+      fecha:    parseDate(col(r, "Fecha")),
+      producto: col(r, "Producto"),
+      lote:     col(r, "Lote"),
+      precioUn: parseNum(col(r, "Precio Un.")),
+      cantidad: parseNum(col(r, "Cantidad")),
+    })).filter((r) => r.cliente),
+  [data]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return [];
+    const q = search.toLowerCase();
+    return rows.filter((r) => r.cliente.toLowerCase().includes(q));
+  }, [rows, search]);
+
+  const sortedFiltered = useMemo(() =>
+    applySort(filtered, guiSort.key, guiSort.dir, (r, k) => {
+      if (k === "fecha")    return r.fecha?.getTime() ?? 0;
+      if (k === "cliente")  return r.cliente.toLowerCase();
+      if (k === "producto") return r.producto.toLowerCase();
+      if (k === "lote")     return r.lote.toLowerCase();
+      return r[k] ?? 0;
+    }),
+  [filtered, guiSort.key, guiSort.dir]);
+
+  const { page, go, totalPages, slice, total } = usePag(sortedFiltered);
+
+  const summary = useMemo(() => {
+    if (!filtered.length) return null;
+    return {
+      totalQ: filtered.reduce((s, r) => s + r.cantidad, 0),
+      prods:  new Set(filtered.map((r) => r.producto)).size,
+      dias:   new Set(filtered.map((r) => r.fecha?.toISOString().slice(0, 10)).filter(Boolean)).size,
+    };
+  }, [filtered]);
+
+  const handleExport = () => {
+    if (!filtered.length) return;
+    const ws = XLSX.utils.json_to_sheet(filtered.map((r) => ({
+      Fecha: r.fecha ? fmtDate(r.fecha) : "", Cliente: r.cliente, Producto: r.producto,
+      "Marca / Lote": r.lote, "Precio Un.": r.precioUn, Cantidad: r.cantidad,
+    })));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Compras Cliente");
+    XLSX.writeFile(wb, `historial_${(search || "cliente").replace(/\s+/g, "_")}.xlsx`);
+  };
+
+  const STH = (props) => <SortTh {...props} currentKey={guiSort.key} dir={guiSort.dir} onSort={guiSort.toggle} />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-3 items-center">
+        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Escribe el nombre del cliente para ver su historial…" />
+        {filtered.length > 0 && (
+          <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold rounded-lg transition-colors shrink-0">
+            <Download size={15} /> Exportar Excel
+          </button>
+        )}
+      </div>
+      {search.trim() && summary && (
+        <div className="grid grid-cols-3 gap-3">
+          <Card label="Cantidad Total"      value={fmt(summary.totalQ, 2)} sub="kg / unidades" />
+          <Card label="Productos Distintos" value={summary.prods} />
+          <Card label="Días con Compra"     value={summary.dias} />
+        </div>
+      )}
+      {!search.trim() && (
+        <div className="flex flex-col items-center justify-center py-24 text-gray-600 gap-3">
+          <ShoppingCart size={44} className="opacity-15" />
+          <p className="text-sm">Ingresa el nombre de un cliente para ver su historial de compras</p>
+        </div>
+      )}
+      {search.trim() && filtered.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-24 text-gray-600 gap-3">
+          <Search size={44} className="opacity-15" />
+          <p className="text-sm">No se encontraron resultados para <span className="text-gray-400">"{search}"</span></p>
+        </div>
+      )}
+      {sortedFiltered.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/60">
+                <tr>
+                  <STH label="Fecha"      sk="fecha"    />
+                  <STH label="Cliente"    sk="cliente"  />
+                  <STH label="Producto"   sk="producto" />
+                  <STH label="Marca/Lote" sk="lote"     />
+                  <STH label="Precio Un." sk="precioUn" right />
+                  <STH label="Cantidad"   sk="cantidad" right />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/60">
+                {slice.map((r, i) => (
+                  <tr key={i} className="hover:bg-gray-800/30 transition-colors">
+                    <Td ch={r.fecha ? fmtDate(r.fecha) : "-"} dim />
+                    <td className="px-3 py-2 text-sm font-medium text-white max-w-[180px]"><span className="block truncate">{r.cliente}</span></td>
+                    <Td ch={r.producto} />
+                    <td className="px-3 py-2 text-xs text-gray-500 max-w-[160px]"><span className="block truncate" title={r.lote}>{r.lote}</span></td>
+                    <Td ch={"$" + fmtM(r.precioUn)} right />
+                    <Td ch={fmt(r.cantidad, 2)} right dim />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} totalPages={totalPages} go={go} total={total} />
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════
+//  TAB 3 — COMPRAS / PROVEEDORES
+// ═══════════════════════════════════════════════
+
+const ComprasTab = ({ data }) => {
+  const [search,     setSearch]     = useState("");
+  const [modalFolio, setModalFolio] = useState(null);
+  const compSort = useSort("fecha", "desc");
+
+  const rows = useMemo(() =>
+    data.map((r) => ({
+      proveedor: col(r, "Razón Social", "Razon Social"),
+      fecha:     parseDate(col(r, "Fecha")),
+      producto:  col(r, "Concepto / Artículo", "Concepto / Articulo", "Concepto/Artículo"),
+      precioUn:  parseNum(col(r, "Precio Un.")),
+      cantidad:  parseNum(col(r, "Cantidad")),
+      total:     parseNum(col(r, "Total Línea", "Total Linea")),
+      folio:     col(r, "Folio"),
+    })).filter((r) => r.proveedor),
+  [data]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return rows;
+    const q = search.toLowerCase();
+    return rows.filter((r) =>
+      r.proveedor.toLowerCase().includes(q) || r.producto.toLowerCase().includes(q)
+    );
+  }, [rows, search]);
+
+  const sortedFiltered = useMemo(() =>
+    applySort(filtered, compSort.key, compSort.dir, (r, k) => {
+      if (k === "fecha")     return r.fecha?.getTime() ?? 0;
+      if (k === "proveedor") return r.proveedor.toLowerCase();
+      if (k === "producto")  return r.producto.toLowerCase();
+      return r[k] ?? 0;
+    }),
+  [filtered, compSort.key, compSort.dir]);
+
+  const { page, go, totalPages, slice, total } = usePag(sortedFiltered);
+
+  const summary = useMemo(() => {
+    if (!search.trim() || !filtered.length) return null;
+    return {
+      totalC: filtered.reduce((s, r) => s + r.total,   0),
+      totalQ: filtered.reduce((s, r) => s + r.cantidad, 0),
+      prods:  new Set(filtered.map((r) => r.producto)).size,
+    };
+  }, [filtered, search]);
+
+  const STH = (props) => <SortTh {...props} currentKey={compSort.key} dir={compSort.dir} onSort={compSort.toggle} />;
+
+  return (
+    <div className="space-y-4">
+      {modalFolio && <CompraModal folio={modalFolio} allRows={rows} onClose={() => setModalFolio(null)} />}
+      <div className="flex items-center gap-3">
+        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar por proveedor o por producto…" />
+        <span className="text-xs text-gray-500 shrink-0 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2">Búsqueda dual</span>
+      </div>
+      {summary && (
+        <div className="grid grid-cols-3 gap-3">
+          <Card label="Total Comprado"      value={"$" + fmtM(summary.totalC)} color="text-purple-300" />
+          <Card label="Cantidad Total"      value={fmt(summary.totalQ, 2)} sub="kg / unidades" />
+          <Card label="Productos Distintos" value={summary.prods} />
+        </div>
+      )}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-800/60">
+              <tr>
+                <STH label="Fecha"         sk="fecha"     />
+                <STH label="Proveedor"     sk="proveedor" />
+                <STH label="Producto"      sk="producto"  />
+                <STH label="Precio Compra" sk="precioUn"  right />
+                <STH label="Cantidad"      sk="cantidad"  right />
+                <STH label="Total Línea"   sk="total"     right />
+                <Th  ch="Ver Compra"                      right />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {slice.map((r, i) => (
+                <tr key={i} className="hover:bg-gray-800/30 transition-colors">
+                  <Td ch={r.fecha ? fmtDate(r.fecha) : "-"} dim />
+                  <td className="px-3 py-2 text-sm font-medium text-white max-w-[160px]"><span className="block truncate">{r.proveedor}</span></td>
+                  <td className="px-3 py-2 text-sm text-gray-200 max-w-[180px]"><span className="block truncate" title={r.producto}>{r.producto}</span></td>
+                  <Td ch={"$" + fmtM(r.precioUn)} right />
+                  <Td ch={fmt(r.cantidad, 2)} right dim />
+                  <Td ch={"$" + fmtM(r.total)} right color="text-purple-300" bold />
+                  <td className="px-3 py-2 text-right">
+                    <button onClick={() => setModalFolio(r.folio)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-700 hover:bg-blue-700 text-gray-300 hover:text-white text-xs rounded-lg transition-all">
+                      <Eye size={11} /> Ver Compra
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pager page={page} totalPages={totalPages} go={go} total={total} />
+      </div>
+    </div>
+  );
+};
+
+
+
+
+// ═══════════════════════════════════════════════
+//  TAB 4 — OPTIMIZADOR DE PRECIOS
+// ═══════════════════════════════════════════════
+
+const PRICE_KW = ["precio", "price", "valor", "costo", "tarifa", "p.u.", "pu", "unit", "importe"];
+const PROD_KW  = ["producto", "descripcion", "descripción", "articulo", "artículo", "corte", "nombre", "item", "detalle", "concepto"];
+const ATTR_KW  = ["marca", "procedencia", "origen", "planta", "pais", "país", "raza", "tipo", "calidad"];
+
+const GROUP_STRIP = new Set([
+  "medallon","medallón","medallones",
+  "entero","entera","enteros","enteras",
+  "porcionado","porcionada","porcionados","porcionadas",
+  "trozado","trozada","trozados",
+]);
+
+const normStr = (s) =>
+  String(s).toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ").trim();
+
+const makeGroupKey = (normProd) =>
+  normProd.split(" ").filter(w => w && !GROUP_STRIP.has(w)).join(" ").trim() || normProd;
+
+const detectProvCat = (filename, sheetName = "") => {
+  const base = filename.replace(/\.(xlsx?|csv)$/i, "");
+  const dashIdx = base.indexOf("-");
+  if (dashIdx > 0) {
+    return { provider: base.slice(0, dashIdx).trim(), category: base.slice(dashIdx + 1).trim() };
+  }
+  const ignored = ["sheet1", "hoja1", "sheet", "hoja", "data", "datos", "precios", "lista"];
+  const catFromSheet = sheetName && !ignored.includes(sheetName.toLowerCase().trim())
+    ? sheetName.trim() : "Vacuno";
+  return { provider: base.trim(), category: catFromSheet };
+};
+
+const parseSheetGrid = (grid, provider, category, fileId) => {
+  if (!grid || grid.length < 2) return [];
+  let hRow = -1;
+  for (let i = 0; i < Math.min(15, grid.length); i++) {
+    const row = grid[i];
+    const strCells = row.filter(
+      (c) => c !== "" && c != null && typeof c === "string" && c.trim().length > 1 && isNaN(Number(String(c).replace(",",".")))
+    );
+    if (strCells.length >= 2) { hRow = i; break; }
+  }
+  if (hRow === -1) return [];
+  const headers = grid[hRow].map((h) => String(h == null ? "" : h).trim());
+  const hNorm   = headers.map((h) => normStr(h));
+  let prodCol  = hNorm.findIndex((h) => PROD_KW.some((kw) => h.includes(kw)));
+  if (prodCol  === -1) prodCol  = headers.findIndex((h) => h !== "");
+  let priceCol = hNorm.findIndex((h) => PRICE_KW.some((kw) => h.includes(kw)));
+  if (priceCol === -1) {
+    for (let c = 0; c < headers.length; c++) {
+      if (c === prodCol) continue;
+      const sample = grid.slice(hRow + 1, hRow + 9).map((r) => r[c]).filter((v) => v !== "" && v != null);
+      if (sample.length >= 2 && sample.every((v) => parseNum(String(v)) > 0)) { priceCol = c; break; }
+    }
+  }
+  const attrCols = hNorm.reduce((acc, h, i) => {
+    if (ATTR_KW.some((kw) => h.includes(kw))) acc.push({ idx: i });
+    return acc;
+  }, []);
+  if (prodCol === -1 || priceCol === -1) return [];
+  const rows = [];
+  for (let i = hRow + 1; i < grid.length; i++) {
+    const row     = grid[i];
+    const rawProd = String(row[prodCol] == null ? "" : row[prodCol]).trim();
+    const rawPrc  = row[priceCol];
+    if (!rawProd || rawPrc === "" || rawPrc == null) continue;
+    const precio = parseNum(String(rawPrc));
+    if (precio <= 0) continue;
+    const atributo = attrCols
+      .map((a) => String(row[a.idx] == null ? "" : row[a.idx]).trim())
+      .filter(Boolean).join(" · ");
+    const productoNorm = normStr(rawProd);
+    rows.push({
+      uid:              `${fileId}_${i}`,
+      fileId,
+      proveedor:        provider,
+      categoria:        category,
+      productoOriginal: rawProd,
+      productoNorm,
+      groupKey:         makeGroupKey(productoNorm),
+      atributo,
+      precio,
+    });
+  }
+  return rows;
+};
+
+// pendingFiles = { files: File[], version: number }
+// Cada vez que version sube, PreciosTab procesa los nuevos archivos
+const PreciosTab = ({ pendingFiles }) => {
+  const [allRows,   setAllRows]   = useState([]);
+  const [fileCards, setFileCards] = useState([]);
+  const [loading,   setLoading]   = useState(false);
+  const [search,    setSearch]    = useState("");
+  const [catFilter, setCatFilter] = useState("Todos");
+  const [dragging,  setDragging]  = useState(false);
+  const uploadRef  = useRef();
+  const priceSort  = useSort("precio", "asc");
+  const lastVersion = useRef(-1);
+
+  // Procesa nuevos archivos cuando llega una versión nueva desde App
+  useEffect(() => {
+    if (
+      pendingFiles &&
+      pendingFiles.version > lastVersion.current &&
+      pendingFiles.files && pendingFiles.files.length > 0
+    ) {
+      lastVersion.current = pendingFiles.version;
+      handlePriceFiles(pendingFiles.files);
+    }
+  }, [pendingFiles && pendingFiles.version]);  // eslint-disable-line
+
+  const handlePriceFiles = useCallback(async (fileList) => {
+    setLoading(true);
+    const newRows  = [];
+    const newCards = [];
+    for (const file of Array.from(fileList)) {
+      const ext    = file.name.split(".").pop().toLowerCase();
+      const fileId = `${file.name}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      try {
+        if (ext === "csv") {
+          const text  = await file.text();
+          const lines = text.split(/\r?\n/).filter(Boolean);
+          if (!lines.length) continue;
+          const h1    = lines[0].replace(/^\uFEFF/, "");
+          const delim = (h1.match(/;/g) || []).length >= (h1.match(/,/g) || []).length ? ";" : ",";
+          const grid  = lines.map((l) =>
+            l.replace(/^\uFEFF/, "").split(delim).map((c) => c.trim().replace(/^"|"$/g, ""))
+          );
+          const { provider, category } = detectProvCat(file.name);
+          const rows = parseSheetGrid(grid, provider, category, fileId);
+          newRows.push(...rows);
+          newCards.push({ id: fileId, name: file.name, provider, category, count: rows.length });
+        } else if (ext === "xlsx" || ext === "xls") {
+          const buf = await file.arrayBuffer();
+          const wb  = XLSX.read(buf, { type: "array" });
+          for (const sheetName of wb.SheetNames) {
+            const ws          = wb.Sheets[sheetName];
+            const grid        = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+            const sheetFileId = `${fileId}_${sheetName}`;
+            const { provider, category } = detectProvCat(file.name, sheetName);
+            const rows = parseSheetGrid(grid, provider, category, sheetFileId);
+            if (rows.length > 0) {
+              newRows.push(...rows);
+              newCards.push({ id: sheetFileId, name: `${file.name} [${sheetName}]`, provider, category, count: rows.length });
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error al procesar", file.name, err);
+      }
+    }
+    setAllRows((prev) => [...prev, ...newRows]);
+    setFileCards((prev) => [...prev, ...newCards]);
+    setLoading(false);
+  }, []);
+
+  const deleteFile = useCallback((fileId) => {
+    setAllRows((prev) => prev.filter((r) => r.fileId !== fileId));
+    setFileCards((prev) => prev.filter((f) => f.id !== fileId));
+  }, []);
+
+  const clearAll = () => { setAllRows([]); setFileCards([]); setSearch(""); setCatFilter("Todos"); };
+
+  const categories = useMemo(() => {
+    const cats = [...new Set(allRows.map((r) => r.categoria))].sort();
+    return ["Todos", ...cats];
+  }, [allRows]);
+
+  const filtered = useMemo(() => {
+    let rows = allRows;
+    if (catFilter !== "Todos")
+      rows = rows.filter((r) => r.categoria.toLowerCase() === catFilter.toLowerCase());
+    if (search.trim()) {
+      const q = normStr(search);
+      rows = rows.filter((r) => r.productoNorm.includes(q) || r.groupKey.includes(q));
+    }
+    return rows;
+  }, [allRows, catFilter, search]);
+
+  const sortedRows = useMemo(() =>
+    applySort(filtered, priceSort.key, priceSort.dir, (r, k) => {
+      if (k === "proveedor") return r.proveedor.toLowerCase();
+      if (k === "categoria") return r.categoria.toLowerCase();
+      if (k === "producto")  return r.productoNorm;
+      if (k === "atributo")  return r.atributo.toLowerCase();
+      if (k === "precio")    return r.precio;
+      return 0;
+    }),
+  [filtered, priceSort.key, priceSort.dir]);
+
+  const bestByGroup = useMemo(() => {
+    const map = {};
+    filtered.forEach((r) => {
+      if (!map[r.groupKey] || r.precio < map[r.groupKey]) map[r.groupKey] = r.precio;
+    });
+    return map;
+  }, [filtered]);
+
+  const { page, go, totalPages, slice, total } = usePag(sortedRows);
+  const STH = (props) => <SortTh {...props} currentKey={priceSort.key} dir={priceSort.dir} onSort={priceSort.toggle} />;
+  const proveedoresCount = new Set(filtered.map((r) => r.proveedor)).size;
+  const gruposCount      = new Set(filtered.map((r) => r.groupKey)).size;
+
+  return (
+    <div className="space-y-5">
+
+      {/* ── UPLOAD ZONE ─────────────────────────── */}
+      <div
+        onDrop={(e) => { e.preventDefault(); setDragging(false); handlePriceFiles(e.dataTransfer.files); }}
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onClick={() => uploadRef.current?.click()}
+        className={`border-2 border-dashed rounded-xl p-4 cursor-pointer transition-all select-none ${
+          dragging ? "border-blue-400 bg-blue-950/20" : "border-gray-700 hover:border-gray-600 bg-gray-900/30 hover:bg-gray-900"
+        }`}
+      >
+        {loading
+          ? <div className="flex items-center justify-center gap-2 text-blue-400">
+              <Loader2 className="animate-spin" size={16} />
+              <span className="text-sm">Procesando listas de precios…</span>
+            </div>
+          : <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-gray-400 text-sm">
+              <div className="flex items-center gap-2"><Upload size={15} /><span>Agregar más listas de precios (.csv o .xlsx)</span></div>
+              <span className="hidden sm:block text-gray-700">·</span>
+              <span className="text-xs text-gray-600 font-mono bg-gray-800 px-2 py-0.5 rounded">
+                Nombre: <span className="text-blue-400">Proveedor-Categoría.xlsx</span>
+              </span>
+            </div>}
+        <input ref={uploadRef} type="file" multiple accept=".csv,.xlsx,.xls" className="hidden"
+          onChange={(e) => handlePriceFiles(e.target.files)} />
+      </div>
+
+      {/* ── LISTA DE ARCHIVOS CON BOTÓN ELIMINAR ─── */}
+      {fileCards.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700">
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+              Archivos cargados ({fileCards.length})
+            </span>
+            <button onClick={clearAll}
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-red-950/30 border border-red-800/40 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors">
+              <Trash2 size={11} /> Limpiar todo
+            </button>
+          </div>
+          <div className="divide-y divide-gray-800/60 max-h-52 overflow-y-auto">
+            {fileCards.map((f) => (
+              <div key={f.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-800/20 transition-colors">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <FileText size={13} className="text-gray-500 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-sm text-gray-200 truncate">{f.name}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      <span className="text-blue-400">{f.provider}</span>
+                      <span className="mx-1.5 text-gray-700">·</span>
+                      <span className="text-emerald-400">{f.category}</span>
+                      <span className="mx-1.5 text-gray-700">·</span>
+                      <span>{f.count} precios</span>
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => deleteFile(f.id)}
+                  title="Eliminar este archivo"
+                  className="shrink-0 ml-3 p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-950/30 rounded-lg transition-all">
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── SEARCH + CATEGORY FILTER ──────────────── */}
+      {allRows.length > 0 && (
+        <div className="flex gap-3 flex-wrap items-center">
+          <SearchBar
+            value={search}
+            onChange={(v) => { setSearch(v); go(0); }}
+            placeholder="Buscar producto para comparar precios entre proveedores…"
+          />
+          <div className="flex gap-1 flex-wrap shrink-0">
+            {categories.map((c) => (
+              <button key={c} onClick={() => { setCatFilter(c); go(0); }}
+                className={`px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                  catFilter === c
+                    ? "bg-emerald-700 text-white shadow-lg shadow-emerald-900/30"
+                    : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"
+                }`}>{c}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── STATS BAR ─────────────────────────────── */}
+      {filtered.length > 0 && (
+        <div className="flex items-center gap-6 text-xs text-gray-500 px-1 flex-wrap">
+          <span><span className="text-white font-semibold">{total.toLocaleString("es-CL")}</span> precios</span>
+          <span><span className="text-white font-semibold">{proveedoresCount}</span> proveedores</span>
+          <span><span className="text-white font-semibold">{gruposCount}</span> grupos únicos</span>
+          {search && (
+            <span className="text-emerald-400">
+              · {Object.keys(bestByGroup).length} grupos con mejor precio identificado
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* ── RESULTS TABLE ────────────────────────── */}
+      {sortedRows.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/60">
+                <tr>
+                  <Th ch="Estado" />
+                  <STH label="Categoría"            sk="categoria" />
+                  <STH label="Proveedor"             sk="proveedor" />
+                  <STH label="Producto Original"     sk="producto"  />
+                  <STH label="Marca / Procedencia"   sk="atributo"  />
+                  <STH label="Precio Unit."           sk="precio"   right />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/60">
+                {slice.map((r) => {
+                  const isBest = bestByGroup[r.groupKey] === r.precio;
+                  return (
+                    <tr key={r.uid}
+                      className={`transition-colors ${
+                        isBest ? "bg-emerald-950/25 hover:bg-emerald-950/40" : "hover:bg-gray-800/30"
+                      }`}>
+                      <td className="px-3 py-2.5 text-center whitespace-nowrap">
+                        {isBest
+                          ? <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs rounded-full font-semibold">
+                              <CheckCircle size={10} /> Mejor
+                            </span>
+                          : <span className="text-gray-700 text-xs">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        <span className="px-2 py-0.5 bg-gray-800 border border-gray-700 rounded text-gray-400">
+                          {r.categoria}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-sm font-medium text-white max-w-[140px]">
+                        <span className="block truncate">{r.proveedor}</span>
+                      </td>
+                      <td className="px-3 py-2 text-sm text-gray-200 max-w-[220px]">
+                        <span className="block truncate" title={r.productoOriginal}>{r.productoOriginal}</span>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-400 max-w-[160px]">
+                        <span className="block truncate" title={r.atributo}>
+                          {r.atributo || <span className="text-gray-700 italic">—</span>}
+                        </span>
+                      </td>
+                      <td className={`px-3 py-2.5 text-sm text-right font-bold whitespace-nowrap ${
+                        isBest ? "text-emerald-300" : "text-gray-200"
+                      }`}>
+                        ${fmtM(r.precio)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} totalPages={totalPages} go={go} total={total} />
+        </div>
+      )}
+
+      {/* ── EMPTY STATE ──────────────────────────── */}
+      {allRows.length === 0 && !loading && (
+        <div className="flex flex-col items-center justify-center py-20 gap-4 text-gray-600">
+          <DollarSign size={48} className="opacity-15" />
+          <div className="text-center">
+            <p className="text-sm font-medium text-gray-500">Carga listas de precios para comenzar</p>
+            <p className="text-xs mt-1 text-gray-600">Acepta .xlsx y .csv · Detecta Proveedor y Categoría automáticamente</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-xs text-gray-500 space-y-1.5 max-w-sm">
+            <p className="font-semibold text-gray-400 mb-2">Reglas de detección:</p>
+            <p><span className="text-blue-400">Proveedor-Categoría.xlsx</span> → extrae ambos del nombre</p>
+            <p><span className="text-blue-400">Proveedor.xlsx</span> + nombre de hoja → usa hoja como categoría</p>
+            <p>Sin guión ni hoja → Categoría por defecto: <span className="text-emerald-400">Vacuno</span></p>
+            <p>Columnas <span className="text-yellow-400">Marca / Procedencia / Origen / Planta</span> → atributo</p>
+            <p className="mt-2 pt-2 border-t border-gray-800 text-gray-600">
+              Agrupación inteligente: «medallón», «entero» y «porcionado» se ignoran al comparar variantes del mismo corte
+            </p>
+          </div>
+        </div>
+      )}
+
+      {allRows.length > 0 && filtered.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16 text-gray-600 gap-3">
+          <Search size={36} className="opacity-20" />
+          <p className="text-sm">
+            Sin resultados para <span className="text-gray-400">"{search}"</span>
+            {catFilter !== "Todos" && <> en categoría <span className="text-gray-400">{catFilter}</span></>}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+
+// ═══════════════════════════════════════════════
+//  MAIN APP
+// ═══════════════════════════════════════════════
+
+const EmptyState = ({ msg, icon }) => (
+  <div className="flex flex-col items-center justify-center py-20 gap-3"
+    style={{ color: "#444" }}>
+    <div style={{ opacity: 0.12 }}>{icon}</div>
+    <p className="text-sm">{msg}</p>
+  </div>
+);
+
+function App() {
+  const [rawData,    setRawData]    = useState({ ventas: [], guias: [], compras: [] });
+  const [detected,   setDetected]   = useState({ ventas: null, guias: null, compras: null, preciosCount: 0 });
+  const [loading,    setLoading]    = useState(false);
+  const [loaded,     setLoaded]     = useState(false);
+  const [activeTab,  setActiveTab]  = useState(0);
+  const [priceQueue, setPriceQueue] = useState({ files: [], version: 0 });
+
+  const handleFiles = useCallback(async (fileList) => {
+    setLoading(true);
+    const dataUpdates = {};
+    const nameUpdates = {};
+    const priceFiles  = [];
+
+    for (const file of Array.from(fileList)) {
+      const n = file.name.toLowerCase();
+      let key = null;
+      if      (n.includes("venta"))                          key = "ventas";
+      else if (n.includes("guia") || n.includes("despacho")) key = "guias";
+      else if (n.includes("compra"))                         key = "compras";
+
+      if (key) {
+        nameUpdates[key] = file.name;
+        dataUpdates[key] = parseCSVText(await file.text());
+      } else {
+        priceFiles.push(file);
+      }
+    }
+
+    if (Object.keys(dataUpdates).length > 0) {
+      setRawData((prev)  => ({ ...prev, ...dataUpdates  }));
+      setDetected((prev) => ({ ...prev, ...nameUpdates  }));
+    }
+    if (priceFiles.length > 0) {
+      setDetected((prev) => ({ ...prev, preciosCount: (prev.preciosCount || 0) + priceFiles.length }));
+      setPriceQueue((prev) => ({ files: priceFiles, version: prev.version + 1 }));
+    }
+
+    setLoading(false);
+    setLoaded(true);
+  }, []);
+
+  const hasData = Object.values(rawData).some((d) => d.length > 0) || priceQueue.version > 0;
+
+  const TABS = [
+    { label: "Reporte Ventas",        icon: <TrendingUp   size={15} />, count: rawData.ventas.length  },
+    { label: "Compras Clientes",       icon: <ShoppingCart size={15} />, count: rawData.guias.length   },
+    { label: "Proveedores",            icon: <Package      size={15} />, count: rawData.compras.length },
+    { label: "Optimizador de Precios", icon: <DollarSign   size={15} />, count: null                   },
+  ];
+
+  if (!loaded) return (
+    <UploadScreen
+      onFiles={handleFiles}
+      loading={loading}
+      detected={detected}
+      hasData={hasData}
+      onBack={() => setLoaded(true)}
+    />
+  );
+
+  return (
+    <div className="min-h-screen text-gray-100" style={{ background: "#000", position: "relative" }}>
+      <LogoBg />
+
+      {/* ── Sticky nav ──────────────────────────────── */}
+      <div className="sticky top-0 z-10 border-b px-5 py-3"
+        style={{
+          background:   "rgba(0,0,0,0.96)",
+          backdropFilter: "blur(12px)",
+          borderColor:  "#1a1a1a",
+        }}>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-semibold tracking-widest uppercase" style={{ color: "#c88d31", letterSpacing: "0.15em" }}>Dashboard Comercial</span>
+
+          <button
+            onClick={() => setLoaded(false)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-all"
+            style={{
+              color:   "#c88d31",
+              border:  "1px solid rgba(200,141,49,0.3)",
+              background: "transparent",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(200,141,49,0.1)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <Upload size={12} /> Agregar archivos
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-1 flex-wrap">
+          {TABS.map((t, i) => {
+            const isActive = activeTab === i;
+            return (
+              <button key={i} onClick={() => setActiveTab(i)}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all"
+                style={isActive ? {
+                  background: "rgba(200,141,49,0.18)",
+                  border:     "1px solid rgba(200,141,49,0.5)",
+                  color:      "#c88d31",
+                } : {
+                  background: "transparent",
+                  border:     "1px solid transparent",
+                  color:      "#555",
+                }}
+                onMouseEnter={(e) => {
+                  if (!isActive) e.currentTarget.style.color = "#c88d31";
+                }}
+                onMouseLeave={(e) => {
+                  if (!isActive) e.currentTarget.style.color = "#555";
+                }}
+              >
+                {t.icon} {t.label}
+                {t.count != null && t.count > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full text-xs"
+                    style={{
+                      background: isActive ? "rgba(200,141,49,0.25)" : "#1a1a1a",
+                      color:      isActive ? "#c88d31" : "#555",
+                    }}>
+                    {t.count.toLocaleString("es-CL")}
+                  </span>
+                )}
+                {i === 3 && !isActive && (
+                  <span className="px-1.5 py-0.5 rounded-full text-xs"
+                    style={{ background: "rgba(200,141,49,0.15)", color: "#c88d31", border: "1px solid rgba(200,141,49,0.3)" }}>
+                    NUEVO
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Tab content */}
+      <div className="p-5 max-w-screen-2xl mx-auto">
+        {activeTab === 0 && (rawData.ventas.length > 0
+          ? <VentasTab  data={rawData.ventas}  />
+          : <EmptyState msg="No se detectó archivo de ventas"            icon={<TrendingUp   size={48} />} />)}
+        {activeTab === 1 && (rawData.guias.length > 0
+          ? <GuiasTab   data={rawData.guias}   />
+          : <EmptyState msg="No se detectó archivo de guías de despacho" icon={<ShoppingCart size={48} />} />)}
+        {activeTab === 2 && (rawData.compras.length > 0
+          ? <ComprasTab data={rawData.compras} />
+          : <EmptyState msg="No se detectó archivo de compras"           icon={<Package      size={48} />} />)}
+        {activeTab === 3 && <PreciosTab pendingFiles={priceQueue} />}
+      </div>
+    </div>
+  );
+}
+
+import { createRoot } from "react-dom/client";
+createRoot(document.getElementById("root")).render(React.createElement(App));
+
+  </script>
+</body>
+</html>
