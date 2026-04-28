@@ -1297,6 +1297,26 @@ const ComprasTab = ({ data }) => {
 const PRICE_KW = ["precio", "price", "valor", "costo", "tarifa", "p.u.", "pu", "unit", "importe", "neto", "monto", "total"];
 const PROD_KW  = ["producto", "descripcion", "descripción", "articulo", "artículo", "corte", "nombre", "item", "detalle", "concepto"];
 const ATTR_KW  = ["marca", "procedencia", "origen", "planta", "pais", "país", "raza", "tipo", "calidad"];
+const CATEGORY_KW = new Set([
+  "vacuno","bovino","ternera","res",
+  "cerdo","porcino","chancho",
+  "pollo","ave","aves",
+  "congelado","congelados","fresco","frescos",
+  "ovino","cordero","caprina","cabra",
+  "salmon","salmón","pescado","mariscos","seafood",
+  "embutido","embutidos","fiambre","fiambres","charcuteria",
+]);
+const isCategoryHeader = (prodVal, priceVal) => {
+  if (priceVal !== "" && priceVal != null && parseNum(String(priceVal)) > 0) return false;
+  const s = String(prodVal == null ? "" : prodVal).trim();
+  if (!s || s.length > 60) return false;
+  if (/[▸►▶→▷◆●■]/.test(s)) return true;
+  const words = normStr(s).split(" ").filter(Boolean);
+  // All non-trivial words are category keywords (handles "VACUNO", "CERDO FRESCO", etc.)
+  if (words.length === 0) return false;
+  const meaningful = words.filter(w => w.length > 2);
+  return meaningful.length > 0 && meaningful.every(w => CATEGORY_KW.has(w));
+};
 
 const GROUP_STRIP = new Set([
   "medallon","medallón","medallones",
@@ -1328,6 +1348,7 @@ const detectProvCat = (filename, sheetName = "") => {
 
 const parseSheetGrid = (grid, provider, category, fileId) => {
   if (!grid || grid.length < 2) return [];
+  // Find real header row (≥2 string columns)
   let hRow = -1;
   for (let i = 0; i < Math.min(15, grid.length); i++) {
     const row = grid[i];
@@ -1360,10 +1381,17 @@ const parseSheetGrid = (grid, provider, category, fileId) => {
   }, []);
   if (prodCol === -1 || priceCol === -1) return [];
   const rows = [];
+  let currentCategory = category; // starts with file/sheet name; overridden by in-file headers
   for (let i = hRow + 1; i < grid.length; i++) {
     const row     = grid[i];
     const rawProd = String(row[prodCol] == null ? "" : row[prodCol]).trim();
-    const rawPrc  = row[priceCol];
+    const rawPrc  = priceCol !== -1 ? row[priceCol] : "";
+    // ── Detect in-file category header row ──────────────────────────
+    if (rawProd && isCategoryHeader(rawProd, rawPrc)) {
+      // Clean the category label (remove special chars, trim)
+      currentCategory = rawProd.replace(/[▸►▶→▷◆●■]/g, "").trim();
+      continue; // skip — do not add as a product row
+    }
     if (!rawProd || rawPrc === "" || rawPrc == null) continue;
     const precio = parseNum(String(rawPrc));
     if (precio <= 0) continue;
@@ -1375,7 +1403,7 @@ const parseSheetGrid = (grid, provider, category, fileId) => {
       uid:              `${fileId}_${i}`,
       fileId,
       proveedor:        provider,
-      categoria:        category,
+      categoria:        currentCategory, // ← in-file category takes priority
       productoOriginal: rawProd,
       productoNorm,
       groupKey:         makeGroupKey(productoNorm),
