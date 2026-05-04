@@ -1736,6 +1736,443 @@ const PreciosTab = ({ pendingFiles }) => {
 //  MAIN APP
 // ═══════════════════════════════════════════════
 
+
+// ═══════════════════════════════════════════════
+//  TAB 5 — ANÁLISIS DE PRODUCTOS
+// ═══════════════════════════════════════════════
+class ProductosErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  componentDidCatch(e, info) { console.error("ProductosTab error:", e, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex flex-col items-center justify-center py-20 gap-4" style={{color:"#f87171"}}>
+          <BarChart2 size={40} style={{opacity:0.3}}/>
+          <p className="text-sm font-semibold">Error al renderizar el análisis</p>
+          <p className="text-xs text-gray-500 max-w-md text-center">{String(this.state.error)}</p>
+          <button type="button" className="text-xs text-blue-400 hover:underline mt-1"
+            onClick={() => this.setState({ error: null })}>
+            Reintentar
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const ProductosTab = ({ data }) => {
+  const [search,   setSearch]   = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo,   setDateTo]   = useState("");
+  const [selected, setSelected] = useState([]);
+  const [showSugg,      setShowSugg]      = useState(false);
+  const [clientSearch,  setClientSearch]  = useState("");
+
+  const rows = useMemo(() =>
+    data.map((r) => ({
+      producto:  col(r, "Producto"),
+      cliente:   col(r, "Razón Social", "Razon Social", "Cliente", "Rz. Social"),
+      fecha:     parseDate(col(r, "Fecha")),
+      venta:     parseNum(col(r, "Total Línea", "Total Linea", "Total")),
+      contrib:   parseNum(col(r, "Margen Contrib $")),
+      cantidad:  parseNum(col(r, "Cantidad")),
+      precioUn:  parseNum(col(r, "Precio Un.", "Precio Un", "Precio Unitario", "P.U.")),
+    })).filter((r) => r.fecha && r.producto),
+  [data]);
+
+  const allProducts = useMemo(() =>
+    [...new Set(rows.map((r) => r.producto))].sort(),
+  [rows]);
+
+  const dateBounds = useMemo(() => {
+    if (!rows.length) return { min: "", max: "" };
+    const toInput = (ms) => {
+      const d = new Date(ms);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    };
+    // Use reduce instead of spread to avoid stack overflow with large arrays
+    let minT = Infinity, maxT = -Infinity;
+    rows.forEach((r) => { const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t; });
+    return { min: toInput(minT), max: toInput(maxT) };
+  }, [rows]);
+
+  // Initialize date range from data bounds (only if user hasn't set them)
+  useEffect(() => {
+    if (dateBounds.min && !dateFrom) setDateFrom(dateBounds.min);
+    if (dateBounds.max && !dateTo)   setDateTo(dateBounds.max);
+  }, [dateBounds.min, dateBounds.max]);
+
+  const suggestions = useMemo(() => {
+    if (!search.trim()) return [];
+    const q = normStr(search);
+    return allProducts.filter((p) => normStr(p).includes(q) && !selected.includes(p)).slice(0, 12);
+  }, [allProducts, search, selected]);
+
+  const addProduct = (p) => { setSelected((prev) => prev.includes(p) ? prev : [...prev, p]); setSearch(""); setShowSugg(false); };
+  const removeProduct = (p) => setSelected((prev) => prev.filter((x) => x !== p));
+
+  const filtered = useMemo(() => {
+    if (!selected.length) return [];
+    const from = dateFrom ? new Date(dateFrom) : null;
+    const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
+    return rows.filter((r) => {
+      if (!selected.includes(r.producto)) return false;
+      if (from && r.fecha < from) return false;
+      if (to   && r.fecha > to)   return false;
+      return true;
+    });
+  }, [rows, selected, dateFrom, dateTo]);
+
+  const summary = useMemo(() => {
+    const map = {};
+    filtered.forEach((r) => {
+      if (!map[r.producto]) map[r.producto] = { venta: 0, contrib: 0, cantidad: 0 };
+      map[r.producto].venta    += r.venta;
+      map[r.producto].contrib  += r.contrib;
+      map[r.producto].cantidad += r.cantidad;
+    });
+    return Object.entries(map).map(([producto, v]) => ({
+      producto, ...v,
+      margen: v.venta > 0 ? (v.contrib / v.venta) * 100 : 0,
+    })).sort((a, b) => b.venta - a.venta);
+  }, [filtered]);
+
+  const trend = useMemo(() => {
+    const map = {};
+    filtered.forEach((r) => {
+      const ws = getWeekStart(r.fecha);
+      const wk = ws.toISOString().slice(0, 10);
+      if (!map[wk]) map[wk] = { label: fmtDate(ws), venta: 0, contrib: 0 };
+      map[wk].venta   += r.venta;
+      map[wk].contrib += r.contrib;
+    });
+    return Object.entries(map)
+      .sort(([a], [b]) => a.localeCompare(b))   // sort by ISO week key
+      .map(([, v]) => v);
+  }, [filtered]);
+
+  const totals = useMemo(() => ({
+    venta:   filtered.reduce((s, r) => s + r.venta,   0),
+    contrib: filtered.reduce((s, r) => s + r.contrib, 0),
+  }), [filtered]);
+
+  const clientSummary = useMemo(() => {
+    const map = {};
+    filtered.forEach((r) => {
+      const k = r.cliente || "Sin Razón Social";
+      if (!map[k]) map[k] = { cliente: k, venta: 0, contrib: 0, cantidad: 0, precios: [], lastFecha: null };
+      map[k].venta    += r.venta;
+      map[k].contrib  += r.contrib;
+      map[k].cantidad += r.cantidad;
+      if (r.precioUn > 0) map[k].precios.push({ p: r.precioUn, q: r.cantidad || 1, fecha: r.fecha });
+      if (!map[k].lastFecha || (r.fecha && r.fecha > map[k].lastFecha)) map[k].lastFecha = r.fecha;
+    });
+    return Object.values(map).map((c) => {
+      const ps = c.precios;
+      const precioMin  = ps.length ? ps.reduce((m, x) => Math.min(m, x.p), Infinity) : 0;
+      const precioMax  = ps.length ? ps.reduce((m, x) => Math.max(m, x.p), -Infinity) : 0;
+      const totalQ     = ps.reduce((s, x) => s + x.q, 0);
+      const precioPromedio = totalQ > 0 ? ps.reduce((s, x) => s + x.p * x.q, 0) / totalQ : 0;
+      const lastEntry  = ps.length ? ps.sort((a, b) => b.fecha - a.fecha)[0] : null;
+      const precioUltimo = lastEntry ? lastEntry.p : 0;
+      return {
+        ...c,
+        margen: c.venta > 0 ? (c.contrib / c.venta) * 100 : 0,
+        precioMin, precioMax, precioPromedio, precioUltimo,
+        compras: ps.length,
+      };
+    }).sort((a, b) => b.venta - a.venta);
+  }, [filtered]);
+
+  const visibleClients = useMemo(() => {
+    if (!clientSearch.trim()) return clientSummary;
+    const q = normStr(clientSearch);
+    return clientSummary.filter((c) => normStr(c.cliente).includes(q));
+  }, [clientSummary, clientSearch]);
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <BarChart2 size={18} className="text-blue-400" />
+        <h2 className="text-base font-bold text-white">Análisis por Producto</h2>
+        <span className="text-xs text-gray-500">Compara ventas, contribución y margen de los SKUs que elijas en el período que definas</span>
+      </div>
+
+      {/* Controls */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
+        {/* Product search */}
+        <div className="lg:col-span-2 space-y-2">
+          {selected.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {selected.map((p) => (
+                <span key={p}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border"
+                  style={{ background:"rgba(59,130,246,0.15)", borderColor:"rgba(59,130,246,0.4)", color:"#93c5fd" }}>
+                  <span className="max-w-[200px] truncate">{p}</span>
+                  <button type="button" onClick={() => removeProduct(p)} className="hover:text-white shrink-0"><X size={11}/></button>
+                </span>
+              ))}
+              {selected.length > 0 && (
+                <button type="button" onClick={() => setSelected([])}
+                  className="text-xs text-gray-500 hover:text-red-400 transition-colors px-2">
+                  Limpiar todo
+                </button>
+              )}
+            </div>
+          )}
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"/>
+            <input
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setShowSugg(true); }}
+              onFocus={() => setShowSugg(true)}
+              onBlur={() => setTimeout(() => setShowSugg(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (suggestions.length > 0) addProduct(suggestions[0]);
+                }
+                if (e.key === "Escape") { setShowSugg(false); setSearch(""); }
+              }}
+              placeholder="Buscar y agregar producto al análisis…"
+              className="w-full pl-9 pr-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50"
+            />
+            {showSugg && suggestions.length > 0 && (
+              <div className="absolute z-20 w-full mt-1 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl max-h-64 overflow-y-auto">
+                {suggestions.map((p) => (
+                  <button key={p} type="button" onMouseDown={(e) => { e.preventDefault(); addProduct(p); }}
+                    className="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-800 transition-colors">
+                    <span className="block truncate">{p}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Date range */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-xs text-gray-500 uppercase tracking-wide">Período de análisis</label>
+            {(dateFrom || dateTo) && (
+              <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
+                className="text-xs text-gray-600 hover:text-blue-400 transition-colors">
+                Restablecer
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <p className="text-xs text-gray-600 mb-1">Desde</p>
+              <input type="date" value={dateFrom} min={dateBounds.min} max={dateBounds.max}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="w-full px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
+            </div>
+            <div className="flex-1">
+              <p className="text-xs text-gray-600 mb-1">Hasta</p>
+              <input type="date" value={dateTo} min={dateBounds.min} max={dateBounds.max}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="w-full px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Empty state */}
+      {selected.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-24 text-gray-600 gap-3">
+          <BarChart2 size={48} className="opacity-15"/>
+          <p className="text-sm">Busca y selecciona uno o más productos para analizar</p>
+          <p className="text-xs text-gray-700">{allProducts.length.toLocaleString("es-CL")} SKUs disponibles</p>
+        </div>
+      )}
+
+      {/* Results */}
+      {selected.length > 0 && filtered.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-20 text-gray-600 gap-3">
+          <Search size={36} className="opacity-20"/>
+          <p className="text-sm">Sin ventas para los productos seleccionados en el período indicado</p>
+        </div>
+      )}
+
+      {selected.length > 0 && filtered.length > 0 && (
+        <div className="space-y-4">
+          {/* KPIs */}
+          <div className="grid grid-cols-3 gap-3">
+            <Card label="Venta Total Período"  value={"$" + fmtM(totals.venta)}   sub={filtered.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300"    icon={<TrendingUp size={15}/>}/>
+            <Card label="Contribución Total"   value={"$" + fmtM(totals.contrib)} sub={summary.length + " SKU" + (summary.length !== 1 ? "s" : "")} color="text-emerald-300" icon={<DollarSign size={15}/>}/>
+            <Card label="Margen % Período"     value={fmtPct(totals.venta > 0 ? (totals.contrib / totals.venta) * 100 : 0)} color="text-yellow-300"/>
+          </div>
+
+          {/* Trend chart — pure SVG, no recharts dependency */}
+          {trend.length > 1 && (() => {
+            const W = 800, H = 130, PL = 58, PR = 12, PT = 8, PB = 22;
+            const cw = W - PL - PR, ch = H - PT - PB;
+            const maxV = trend.reduce((m, d) => Math.max(m, d.venta, d.contrib), 0) || 1;
+            const xPos = (i) => PL + (i / (trend.length - 1)) * cw;
+            const yPos = (v) => PT + ch - (v / maxV) * ch;
+            const polyline = (key, color) => {
+              const pts = trend.map((d, i) => `${xPos(i)},${yPos(d[key])}`).join(" ");
+              return <polyline key={key} points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>;
+            };
+            // Y-axis ticks
+            const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => {
+              const v = maxV * f;
+              const y = yPos(v);
+              const lbl = v >= 1e6 ? (v/1e6).toFixed(1)+"M" : v >= 1e3 ? (v/1e3).toFixed(0)+"K" : v.toFixed(0);
+              return { y, lbl };
+            });
+            // X-axis ticks: first, middle, last
+            const xIdxs = trend.length <= 4
+              ? trend.map((_, i) => i)
+              : [0, Math.floor((trend.length-1)/2), trend.length-1];
+            return (
+              <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
+                <p className="text-xs text-gray-400 mb-3 uppercase tracking-wide">Tendencia Semanal</p>
+                <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{overflow:"visible"}}>
+                  {/* grid lines */}
+                  {yTicks.map((t) => (
+                    <line key={t.lbl} x1={PL} x2={W-PR} y1={t.y} y2={t.y} stroke="#374151" strokeWidth="0.5"/>
+                  ))}
+                  {/* Y labels */}
+                  {yTicks.map((t) => (
+                    <text key={"yl"+t.lbl} x={PL-4} y={t.y+3} textAnchor="end" fontSize="8" fill="#6B7280">{t.lbl}</text>
+                  ))}
+                  {/* X labels */}
+                  {xIdxs.map((i) => (
+                    <text key={"xl"+i} x={xPos(i)} y={H-2} textAnchor="middle" fontSize="8" fill="#6B7280">{trend[i].label}</text>
+                  ))}
+                  {/* lines */}
+                  {polyline("venta",   "#3B82F6")}
+                  {polyline("contrib", "#10B981")}
+                  {/* dots on first/last */}
+                  {["venta","contrib"].map((key, ki) => [0, trend.length-1].map((i) => (
+                    <circle key={key+i} cx={xPos(i)} cy={yPos(trend[i][key])} r="3"
+                      fill={ki===0?"#3B82F6":"#10B981"} stroke="#111827" strokeWidth="1.5"/>
+                  )))}
+                </svg>
+                <div className="flex gap-4 mt-1 text-xs text-gray-500">
+                  <span><span className="inline-block w-3 h-0.5 bg-blue-500 mr-1 align-middle"/>Venta Neta</span>
+                  <span><span className="inline-block w-3 h-0.5 bg-emerald-500 mr-1 align-middle"/>Contribución</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Per-product breakdown */}
+          <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-gray-700 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+              Desglose por SKU — {summary.length} producto{summary.length !== 1 ? "s" : ""}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-800/60">
+                  <tr>
+                    <Th ch="Producto"/>
+                    <Th ch="Venta Neta" right/>
+                    <Th ch="Contribución" right/>
+                    <Th ch="Margen %" right/>
+                    <Th ch="Cantidad" right/>
+                    <Th ch="% del Total" right/>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800/60">
+                  {summary.map((s) => (
+                    <tr key={s.producto} className="hover:bg-gray-800/30 transition-colors">
+                      <td className="px-3 py-2.5 text-sm text-gray-200 max-w-xs">
+                        <span className="block truncate" title={s.producto}>{s.producto}</span>
+                      </td>
+                      <Td ch={"$" + fmtM(s.venta)}   right bold/>
+                      <Td ch={"$" + fmtM(s.contrib)}  right color="text-emerald-400"/>
+                      <Td ch={fmtPct(s.margen)} right color={s.margen > 15 ? "text-emerald-300" : s.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+                      <Td ch={fmt(s.cantidad, 2)} right dim/>
+                      <Td ch={fmtPct(totals.venta > 0 ? (s.venta / totals.venta) * 100 : 0)} right dim/>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Client breakdown */}
+          {clientSummary.length > 0 && (
+            <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-gray-700 flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  <ShoppingCart size={13}/>
+                  <span>
+                    Detalle por Cliente — {visibleClients.length !== clientSummary.length
+                      ? `${visibleClients.length} de ${clientSummary.length}`
+                      : `${clientSummary.length} cliente${clientSummary.length !== 1 ? "s" : ""}`}
+                  </span>
+                </div>
+                <div className="relative ml-auto">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"/>
+                  <input
+                    value={clientSearch}
+                    onChange={(e) => setClientSearch(e.target.value)}
+                    placeholder="Buscar cliente…"
+                    className="pl-8 pr-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 w-52"
+                  />
+                  {clientSearch && (
+                    <button type="button" onClick={() => setClientSearch("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                      <X size={11}/>
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-800/60">
+                    <tr>
+                      <Th ch="Cliente"/>
+                      <Th ch="Venta Neta" right/>
+                      <Th ch="Contribución" right/>
+                      <Th ch="Margen %" right/>
+                      <Th ch="Cantidad" right/>
+                      <Th ch="P. Mínimo" right/>
+                      <Th ch="P. Máximo" right/>
+                      <Th ch="P. Promedio" right/>
+                      <Th ch="Último Precio" right/>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800/60">
+                    {visibleClients.length === 0
+                      ? (
+                        <tr><td colSpan="9" className="px-4 py-6 text-center text-sm text-gray-600">
+                          Sin clientes que coincidan con "{clientSearch}"
+                        </td></tr>
+                      ) : visibleClients.map((c) => (
+                      <tr key={c.cliente} className="hover:bg-gray-800/30 transition-colors">
+                        <td className="px-3 py-2.5 text-sm text-gray-200 max-w-[220px]">
+                          <span className="block truncate" title={c.cliente}>{c.cliente}</span>
+                          <span className="text-xs text-gray-600">{c.compras} línea{c.compras !== 1 ? "s" : ""}</span>
+                        </td>
+                        <Td ch={"$" + fmtM(c.venta)}   right bold/>
+                        <Td ch={"$" + fmtM(c.contrib)}  right color="text-emerald-400"/>
+                        <Td ch={fmtPct(c.margen)} right color={c.margen > 15 ? "text-emerald-300" : c.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+                        <Td ch={fmt(c.cantidad, 2)} right dim/>
+                        <Td ch={c.precioMin  > 0 ? "$" + fmtM(c.precioMin)       : "-"} right dim/>
+                        <Td ch={c.precioMax  > 0 ? "$" + fmtM(c.precioMax)       : "-"} right dim/>
+                        <Td ch={c.precioPromedio > 0 ? "$" + fmtM(c.precioPromedio) : "-"} right color="text-blue-300"/>
+                        <Td ch={c.precioUltimo > 0 ? "$" + fmtM(c.precioUltimo)   : "-"} right bold color="text-yellow-300"/>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const EmptyState = ({ msg, icon }) => (
   <div className="flex flex-col items-center justify-center py-20 gap-3"
     style={{ color: "#444" }}>
@@ -1793,6 +2230,7 @@ function App() {
     { label: "Compras Clientes",       icon: <ShoppingCart size={15} />, count: rawData.guias.length   },
     { label: "Proveedores",            icon: <Package      size={15} />, count: rawData.compras.length },
     { label: "Optimizador de Precios", icon: <DollarSign   size={15} />, count: null                   },
+    { label: "Análisis Productos",    icon: <BarChart2    size={15} />, count: rawData.ventas.length  },
   ];
 
   if (!loaded) return (
@@ -1890,7 +2328,12 @@ function App() {
         {activeTab === 2 && (rawData.compras.length > 0
           ? <ComprasTab data={rawData.compras} />
           : <EmptyState msg="No se detectó archivo de compras"           icon={<Package      size={48} />} />)}
-        {activeTab === 3 && <PreciosTab pendingFiles={priceQueue} />}
+        <div style={{display: activeTab === 3 ? "block" : "none"}}>
+          <PreciosTab pendingFiles={priceQueue} />
+        </div>
+        {activeTab === 4 && (rawData.ventas.length > 0
+          ? <ProductosErrorBoundary><ProductosTab data={rawData.ventas} /></ProductosErrorBoundary>
+          : <EmptyState msg="No se detectó archivo de ventas" icon={<BarChart2 size={48} />} />)}
       </div>
     </div>
   );
