@@ -753,14 +753,80 @@ const PCOLS = [
   { k: "roll90",  l: "90 Días"    },
 ];
 
+
+// ── SvgTrend — pure SVG line chart (no recharts) ─────────────────────────────
+const SvgTrend = ({ data, height = 90 }) => {
+  if (!data || data.length < 2) return null;
+  const W = 700, PL = 48, PR = 8, PT = 6, PB = 18;
+  const cw = W - PL - PR, ch = height - PT - PB;
+  const maxV = data.reduce((m, d) => Math.max(m, d.venta || 0, d.contrib || 0), 0) || 1;
+  const xP = (i) => PL + (i / (data.length - 1)) * cw;
+  const yP = (v) => PT + ch - (v / maxV) * ch;
+  const poly = (key, color) => (
+    <polyline points={data.map((d,i) => `${xP(i)},${yP(d[key]||0)}`).join(" ")}
+      fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
+  );
+  const yTks = [0, 0.5, 1].map(f => {
+    const v = maxV * f;
+    return { y: yP(v), l: v >= 1e6 ? (v/1e6).toFixed(1)+"M" : v >= 1e3 ? Math.round(v/1e3)+"K" : v.toFixed(0) };
+  });
+  const xIdxs = data.length <= 4 ? data.map((_,i) => i) : [0, Math.floor((data.length-1)/2), data.length-1];
+  return (
+    <svg viewBox={`0 0 ${W} ${height}`} width="100%" height={height} style={{overflow:"visible"}}>
+      {yTks.map(t => <line key={t.l} x1={PL} x2={W-PR} y1={t.y} y2={t.y} stroke="#374151" strokeWidth="0.5"/>)}
+      {yTks.map(t => <text key={"y"+t.l} x={PL-4} y={t.y+3} textAnchor="end" fontSize="9" fill="#6B7280">{t.l}</text>)}
+      {xIdxs.map(i => <text key={"x"+i} x={xP(i)} y={height-2} textAnchor="middle" fontSize="9" fill="#6B7280">{data[i].label}</text>)}
+      {poly("venta",   "#3B82F6")}
+      {poly("contrib", "#10B981")}
+      {["venta","contrib"].flatMap((k,ki) => [0,data.length-1].map(i => (
+        <circle key={k+i} cx={xP(i)} cy={yP(data[i][k]||0)} r="3"
+          fill={ki===0?"#3B82F6":"#10B981"} stroke="#0f172a" strokeWidth="1.5"/>
+      )))}
+    </svg>
+  );
+};
+
+// ── DetailPanel — sliding drawer from right ───────────────────────────────────
+const DetailPanel = ({ title, subtitle, onClose, children }) => {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", h); };
+  }, []);
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:50,display:"flex",alignItems:"stretch"}}>
+      <div style={{flex:1,background:"rgba(0,0,0,0.55)",backdropFilter:"blur(2px)"}} onClick={onClose}/>
+      <div style={{width:"min(640px,94vw)",background:"#090f1a",borderLeft:"1px solid #1f2937",
+        display:"flex",flexDirection:"column",boxShadow:"-8px 0 32px rgba(0,0,0,0.6)"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #1f2937",display:"flex",
+          alignItems:"center",gap:10,position:"sticky",top:0,background:"#090f1a",zIndex:1}}>
+          <button type="button" onClick={onClose}
+            style={{color:"#6B7280",padding:4,borderRadius:6,border:"none",
+              background:"rgba(255,255,255,0.05)",cursor:"pointer",display:"flex"}}>
+            <X size={15}/>
+          </button>
+          <div style={{flex:1,minWidth:0}}>
+            <p style={{fontWeight:700,color:"white",fontSize:14,margin:0,
+              overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</p>
+            {subtitle && <p style={{fontSize:11,color:"#6B7280",margin:0}}>{subtitle}</p>}
+          </div>
+        </div>
+        <div style={{padding:"18px 20px",flex:1,overflowY:"auto"}}>{children}</div>
+      </div>
+    </div>
+  );
+};
+
 const VentasTab = ({ data }) => {
-  const [search,  setSearch]  = useState("");
-  const [metric,  setMetric]  = useState("venta");
-  const [showTop, setShowTop] = useState("venta");
+  const [search,      setSearch]      = useState("");
+  const [metric,      setMetric]      = useState("venta");
+  const [showTop,     setShowTop]     = useState("venta");
+  const [panelClient, setPanelClient] = useState(null);
 
   const mainSort = useSort("totalV", "desc");
   const topSort  = useSort(null,     "desc");
-  const skuSort  = useSort("venta",  "desc");
 
   const rows = useMemo(() =>
     data.map((r) => ({
@@ -774,7 +840,9 @@ const VentasTab = ({ data }) => {
 
   const refDate = useMemo(() => {
     if (!rows.length) return new Date();
-    return new Date(Math.max(...rows.map((r) => r.fecha.getTime())));
+    let max = -Infinity;
+    rows.forEach((r) => { const t = r.fecha.getTime(); if (t > max) max = t; });
+    return new Date(max);
   }, [rows]);
 
   const P = useMemo(() => getPeriods(refDate), [refDate]);
@@ -863,33 +931,29 @@ const VentasTab = ({ data }) => {
     [filtered, mainSort.key, mainSort.dir, mainAccessor]
   );
 
-  const clientDetail = useMemo(() => {
-    if (!search.trim() || filtered.length !== 1) return null;
-    const c = filtered[0];
-    const skuMap = {}; const byWeek = {};
-    c.rows.forEach((r) => {
+  const panelDetail = useMemo(() => {
+    if (!panelClient) return null;
+    const skuMap = {}, byWeek = {};
+    panelClient.rows.forEach((r) => {
       const k = r.producto || "(sin nombre)";
       if (!skuMap[k]) skuMap[k] = { sku: k, venta: 0, contrib: 0 };
       skuMap[k].venta   += r.venta;
       skuMap[k].contrib += r.contrib;
-      const ws = getWeekStart(r.fecha); const wk = ws.toISOString().slice(0, 10);
+      const ws = getWeekStart(r.fecha);
+      const wk = ws.toISOString().slice(0, 10);
       if (!byWeek[wk]) byWeek[wk] = { label: fmtDate(ws), venta: 0, contrib: 0 };
-      byWeek[wk].venta += r.venta; byWeek[wk].contrib += r.contrib;
+      byWeek[wk].venta   += r.venta;
+      byWeek[wk].contrib += r.contrib;
     });
-    return {
-      ...c,
-      skuBreakdown: Object.values(skuMap).map((s) => ({ ...s, margen: s.venta > 0 ? (s.contrib / s.venta) * 100 : 0 })),
-      trend: Object.values(byWeek).sort((a, b) => a.label.localeCompare(b.label)).slice(-16),
-    };
-  }, [filtered, search]);
-
-  const sortedSKUs = useMemo(() => {
-    if (!clientDetail) return [];
-    return applySort(clientDetail.skuBreakdown, skuSort.key, skuSort.dir, (s, k) => {
-      if (k === "sku") return s.sku.toLowerCase();
-      return s[k] ?? 0;
-    });
-  }, [clientDetail, skuSort.key, skuSort.dir]);
+    const skuBreakdown = Object.values(skuMap)
+      .map((s) => ({ ...s, margen: s.venta > 0 ? (s.contrib / s.venta) * 100 : 0 }))
+      .sort((a, b) => b.venta - a.venta);
+    const trend = Object.entries(byWeek)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, v]) => v)
+      .slice(-16);
+    return { ...panelClient, skuBreakdown, trend };
+  }, [panelClient]);
 
   const { page, go, totalPages, slice, total } = usePag(sortedFiltered);
   const getCellVal = (c, pk) => {
@@ -900,10 +964,61 @@ const VentasTab = ({ data }) => {
   };
   const STHtop  = (props) => <SortTh {...props} currentKey={topSort.key}  dir={topSort.dir}  onSort={topSort.toggle}  />;
   const STHmain = (props) => <SortTh {...props} currentKey={mainSort.key} dir={mainSort.dir} onSort={mainSort.toggle} />;
-  const STHsku  = (props) => <SortTh {...props} currentKey={skuSort.key}  dir={skuSort.dir}  onSort={skuSort.toggle}  />;
 
   return (
     <div className="space-y-5">
+      {/* Sliding detail panel */}
+      {panelDetail && (
+        <DetailPanel
+          title={panelDetail.cliente}
+          subtitle={`${panelDetail.skus} SKUs · ${panelDetail.rows.length.toLocaleString("es-CL")} líneas`}
+          onClose={() => setPanelClient(null)}>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <Card label="Venta Total"        value={"$" + fmtM(panelDetail.totalV)} color="text-blue-300"/>
+              <Card label="Contribución Total"  value={"$" + fmtM(panelDetail.totalC)} color="text-emerald-300"/>
+              <Card label="Margen % Total"
+                value={fmtPct(panelDetail.totalV > 0 ? (panelDetail.totalC / panelDetail.totalV) * 100 : 0)}
+                sub={panelDetail.skus + " SKUs"} color="text-yellow-300"/>
+            </div>
+            {panelDetail.trend.length > 1 && (
+              <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,padding:12}}>
+                <p style={{fontSize:11,color:"#6B7280",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.05em"}}>Tendencia semanal</p>
+                <SvgTrend data={panelDetail.trend} height={90}/>
+                <div style={{display:"flex",gap:16,marginTop:4,fontSize:11,color:"#6B7280"}}>
+                  <span><span style={{display:"inline-block",width:12,height:2,background:"#3B82F6",verticalAlign:"middle",marginRight:4}}/>Venta</span>
+                  <span><span style={{display:"inline-block",width:12,height:2,background:"#10B981",verticalAlign:"middle",marginRight:4}}/>Contribución</span>
+                </div>
+              </div>
+            )}
+            <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
+              <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                Apertura por SKU — {panelDetail.skuBreakdown.length} productos
+              </div>
+              <div style={{overflowX:"auto",maxHeight:400,overflowY:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead style={{background:"#1f2937",position:"sticky",top:0}}>
+                    <tr><Th ch="Producto / SKU"/><Th ch="Venta Neta" right/><Th ch="Contribución" right/><Th ch="Margen %" right/></tr>
+                  </thead>
+                  <tbody>
+                    {panelDetail.skuBreakdown.map((s, i) => (
+                      <tr key={i} style={{borderBottom:"1px solid rgba(31,41,55,0.6)"}}>
+                        <td style={{padding:"8px 12px",fontSize:13,color:"#E5E7EB",maxWidth:260}}>
+                          <span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={s.sku}>{s.sku}</span>
+                        </td>
+                        <Td ch={"$" + fmtM(s.venta)}  right/>
+                        <Td ch={"$" + fmtM(s.contrib)} right color="text-emerald-400"/>
+                        <Td ch={fmtPct(s.margen)} right color={s.margen > 15 ? "text-emerald-300" : s.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </DetailPanel>
+      )}
+
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         <Card label="Venta Trim. Cal."    value={"$" + fmtM(globals.quarter.venta)}   sub={rows.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300" />
@@ -917,10 +1032,14 @@ const VentasTab = ({ data }) => {
       {/* Top 20 */}
       <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-          <div className="flex items-center gap-2"><Award size={16} className="text-yellow-400" /><span className="font-semibold text-white">Top 20 Clientes</span></div>
+          <div className="flex items-center gap-2">
+            <Award size={16} className="text-yellow-400" />
+            <span className="font-semibold text-white">Top 20 Clientes</span>
+            <span className="text-xs text-gray-600">— clic para ver detalle</span>
+          </div>
           <div className="flex gap-1">
-            {[["venta", "Por Venta"], ["contrib", "Por Contribución"]].map(([k, l]) => (
-              <button key={k} onClick={() => setShowTop(k)}
+            {[["venta","Por Venta"],["contrib","Por Contribución"]].map(([k,l]) => (
+              <button key={k} type="button" onClick={() => setShowTop(k)}
                 className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${showTop === k ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40" : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"}`}>{l}</button>
             ))}
           </div>
@@ -929,21 +1048,24 @@ const VentasTab = ({ data }) => {
           <table className="w-full">
             <thead className="bg-gray-800/60">
               <tr>
-                <Th ch="#" />
-                <STHtop label="Cliente"                                                 sk="cliente" />
-                <STHtop label={showTop === "venta" ? "Venta Total" : "Contrib. Total"} sk="total"   right />
-                <STHtop label="Margen %"                                                sk="margen"  right />
-                <STHtop label="SKUs"                                                    sk="skus"    right />
+                <Th ch="#"/>
+                <STHtop label="Cliente"                                                 sk="cliente"/>
+                <STHtop label={showTop === "venta" ? "Venta Total" : "Contrib. Total"} sk="total"  right/>
+                <STHtop label="Margen %"                                                sk="margen" right/>
+                <STHtop label="SKUs"                                                    sk="skus"   right/>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/60">
               {sortedTop.map((c, i) => (
-                <tr key={c.cliente} className="hover:bg-gray-800/40 transition-colors">
-                  <Td ch={i + 1} bold color={i < 3 ? "text-yellow-400" : "text-gray-600"} />
-                  <td className="px-3 py-2 text-sm text-gray-200 max-w-xs"><span className="block truncate">{c.cliente}</span></td>
-                  <Td ch={"$" + fmtM(showTop === "venta" ? c.totalV : c.totalC)} right bold />
-                  <Td ch={fmtPct(c.totalV > 0 ? (c.totalC / c.totalV) * 100 : 0)} right color="text-emerald-400" />
-                  <Td ch={c.skus} right dim />
+                <tr key={c.cliente} onClick={() => setPanelClient(c)} style={{cursor:"pointer"}}
+                  className="hover:bg-blue-900/20 transition-colors">
+                  <Td ch={i + 1} bold color={i < 3 ? "text-yellow-400" : "text-gray-600"}/>
+                  <td className="px-3 py-2 text-sm text-white max-w-xs">
+                    <span className="block truncate font-medium">{c.cliente}</span>
+                  </td>
+                  <Td ch={"$" + fmtM(showTop === "venta" ? c.totalV : c.totalC)} right bold/>
+                  <Td ch={fmtPct(c.totalV > 0 ? (c.totalC / c.totalV) * 100 : 0)} right color="text-emerald-400"/>
+                  <Td ch={c.skus} right dim/>
                 </tr>
               ))}
             </tbody>
@@ -951,110 +1073,47 @@ const VentasTab = ({ data }) => {
         </div>
       </div>
 
-      {/* Search + metric selector */}
+      {/* Search + metric */}
       <div className="flex items-center gap-3 flex-wrap">
-        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar cliente para ver detalle o filtrar listado…" />
+        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar cliente…"/>
         <div className="flex gap-1 shrink-0">
-          {[["venta", "Venta Neta"], ["contrib", "Contribución"], ["margen", "Margen %"]].map(([k, l]) => (
-            <button key={k} onClick={() => setMetric(k)}
+          {[["venta","Venta Neta"],["contrib","Contribución"],["margen","Margen %"]].map(([k,l]) => (
+            <button key={k} type="button" onClick={() => setMetric(k)}
               className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all ${metric === k ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"}`}>{l}</button>
           ))}
         </div>
       </div>
 
-      {/* Client detail */}
-      {clientDetail && (
-        <div className="space-y-4 border border-blue-800/50 bg-blue-950/10 rounded-2xl p-4">
-          <div className="flex items-center gap-2">
-            <Info size={15} className="text-blue-400 shrink-0" />
-            <span className="text-sm font-bold text-white truncate">{clientDetail.cliente}</span>
-            <span className="text-xs text-gray-500 shrink-0">— Vista detallada</span>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <Card label="Venta Total"       value={"$" + fmtM(clientDetail.totalV)} color="text-blue-300" />
-            <Card label="Contribución Total" value={"$" + fmtM(clientDetail.totalC)} color="text-emerald-300" />
-            <Card label="Margen % Total"
-              value={fmtPct(clientDetail.totalV > 0 ? (clientDetail.totalC / clientDetail.totalV) * 100 : 0)}
-              sub={clientDetail.skus + " SKUs distintos"} color="text-yellow-300" />
-          </div>
-          {clientDetail.trend.length > 1 && (
-            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
-              <p className="text-xs text-gray-400 mb-3 uppercase tracking-wide">Tendencia semanal</p>
-              <ResponsiveContainer width="100%" height={100}>
-                <LineChart data={clientDetail.trend} margin={{ top: 2, right: 8, bottom: 0, left: 0 }}>
-                  <XAxis dataKey="label" tick={{ fontSize: 9, fill: "#6B7280" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 9, fill: "#6B7280" }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                  <Tooltip formatter={(v, name) => ["$" + fmtM(v), name === "venta" ? "Venta" : "Contrib."]}
-                    contentStyle={{ backgroundColor: "#111827", border: "1px solid #374151", borderRadius: 8, fontSize: 11 }}
-                    labelStyle={{ color: "#9CA3AF" }} />
-                  <Line type="monotone" dataKey="venta"   stroke="#3B82F6" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="contrib" stroke="#10B981" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-              <div className="flex gap-4 mt-1 text-xs text-gray-500">
-                <span><span className="inline-block w-3 h-0.5 bg-blue-500 mr-1 align-middle" />Venta</span>
-                <span><span className="inline-block w-3 h-0.5 bg-emerald-500 mr-1 align-middle" />Contribución</span>
-              </div>
-            </div>
-          )}
-          <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-gray-700 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-              Apertura por SKU — {clientDetail.skuBreakdown.length} productos
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-800/60">
-                  <tr>
-                    <STHsku label="Producto / SKU" sk="sku"    />
-                    <STHsku label="Venta Neta"      sk="venta"   right />
-                    <STHsku label="Contribución"    sk="contrib" right />
-                    <STHsku label="Margen %"        sk="margen"  right />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/60">
-                  {sortedSKUs.map((s, i) => (
-                    <tr key={i} className="hover:bg-gray-800/30">
-                      <td className="px-3 py-2 text-sm text-gray-200 max-w-xs"><span className="block truncate" title={s.sku}>{s.sku}</span></td>
-                      <Td ch={"$" + fmtM(s.venta)}  right />
-                      <Td ch={"$" + fmtM(s.contrib)} right color="text-emerald-400" />
-                      <Td ch={fmtPct(s.margen)} right color={s.margen > 15 ? "text-emerald-300" : s.margen > 0 ? "text-yellow-300" : "text-red-400"} />
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+      {/* Main table — all clients, clickable */}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-gray-700 text-xs text-gray-500">
+          {filtered.length} cliente{filtered.length !== 1 ? "s" : ""} — haz clic en cualquier fila para ver el detalle
         </div>
-      )}
-
-      {/* General table */}
-      {!clientDetail && (
-        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-800/60">
-                <tr>
-                  <STHmain label="Cliente" sk="cliente" />
-                  <STHmain label="SKUs"    sk="skus"    right />
-                  {PCOLS.map((pc) => <STHmain key={pc.k} label={pc.l} sk={pc.k} right />)}
-                  {metric !== "margen" && PCOLS.map((pc) => <STHmain key={pc.k + "_p"} label={"Part% " + pc.l.split(".")[0]} sk={pc.k + "_p"} right />)}
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-800/60">
+              <tr>
+                <STHmain label="Cliente" sk="cliente"/>
+                <STHmain label="SKUs"    sk="skus"   right/>
+                {PCOLS.map((pc) => <STHmain key={pc.k} label={pc.l} sk={pc.k} right/>)}
+                {metric !== "margen" && PCOLS.map((pc) => <STHmain key={pc.k+"_p"} label={"Part% "+pc.l.split(".")[0]} sk={pc.k+"_p"} right/>)}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {slice.map((c) => (
+                <tr key={c.cliente} onClick={() => setPanelClient(c)} style={{cursor:"pointer"}}
+                  className="hover:bg-blue-900/20 transition-colors">
+                  <td className="px-3 py-2 text-sm font-medium text-white max-w-xs"><span className="block truncate" title={c.cliente}>{c.cliente}</span></td>
+                  <Td ch={c.skus} right dim/>
+                  {PCOLS.map((pc) => <Td key={pc.k} ch={getCellVal(c, pc.k)} right color={metric === "margen" && c[pc.k].margen > 0 ? "text-emerald-300" : ""}/>)}
+                  {metric !== "margen" && PCOLS.map((pc) => <Td key={pc.k+"_p"} ch={metric === "venta" ? fmtPct(c[pc.k].ppv) : fmtPct(c[pc.k].ppc)} right dim/>)}
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800/60">
-                {slice.map((c) => (
-                  <tr key={c.cliente} className="hover:bg-gray-800/40 transition-colors">
-                    <td className="px-3 py-2 text-sm font-medium text-white max-w-xs"><span className="block truncate" title={c.cliente}>{c.cliente}</span></td>
-                    <Td ch={c.skus} right dim />
-                    {PCOLS.map((pc) => <Td key={pc.k} ch={getCellVal(c, pc.k)} right color={metric === "margen" && c[pc.k].margen > 0 ? "text-emerald-300" : ""} />)}
-                    {metric !== "margen" && PCOLS.map((pc) => <Td key={pc.k + "_p"} ch={metric === "venta" ? fmtPct(c[pc.k].ppv) : fmtPct(c[pc.k].ppc)} right dim />)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pager page={page} totalPages={totalPages} go={go} total={total} />
+              ))}
+            </tbody>
+          </table>
         </div>
-      )}
+        <Pager page={page} totalPages={totalPages} go={go} total={total}/>
+      </div>
     </div>
   );
 };
@@ -1064,8 +1123,9 @@ const VentasTab = ({ data }) => {
 // ═══════════════════════════════════════════════
 
 const GuiasTab = ({ data }) => {
-  const [search, setSearch] = useState("");
-  const guiSort = useSort("fecha", "desc");
+  const [search,      setSearch]      = useState("");
+  const [panelClient, setPanelClient] = useState(null);
+  const guiSort = useSort("totalQ", "desc");
 
   const rows = useMemo(() =>
     data.map((r) => ({
@@ -1078,106 +1138,157 @@ const GuiasTab = ({ data }) => {
     })).filter((r) => r.cliente),
   [data]);
 
-  const filtered = useMemo(() => {
-    if (!search.trim()) return [];
-    const q = search.toLowerCase();
-    return rows.filter((r) => r.cliente.toLowerCase().includes(q));
-  }, [rows, search]);
+  const clientSummary = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => {
+      const k = r.cliente;
+      if (!map[k]) map[k] = { cliente: k, rows: [], prods: new Set(), totalQ: 0, lastFecha: null };
+      map[k].rows.push(r);
+      if (r.producto) map[k].prods.add(r.producto);
+      map[k].totalQ += r.cantidad;
+      if (!map[k].lastFecha || (r.fecha && r.fecha > map[k].lastFecha)) map[k].lastFecha = r.fecha;
+    });
+    return Object.values(map).map((c) => ({ ...c, prods: c.prods.size }));
+  }, [rows]);
 
-  const sortedFiltered = useMemo(() =>
-    applySort(filtered, guiSort.key, guiSort.dir, (r, k) => {
-      if (k === "fecha")    return r.fecha?.getTime() ?? 0;
-      if (k === "cliente")  return r.cliente.toLowerCase();
-      if (k === "producto") return r.producto.toLowerCase();
-      if (k === "lote")     return r.lote.toLowerCase();
-      return r[k] ?? 0;
+  const filteredClients = useMemo(() => {
+    if (!search.trim()) return clientSummary;
+    const q = normStr(search);
+    return clientSummary.filter((c) => normStr(c.cliente).includes(q));
+  }, [clientSummary, search]);
+
+  const sortedClients = useMemo(() =>
+    applySort(filteredClients, guiSort.key, guiSort.dir, (c, k) => {
+      if (k === "cliente")   return c.cliente.toLowerCase();
+      if (k === "lastFecha") return c.lastFecha?.getTime() ?? 0;
+      if (k === "compras")   return c.rows.length;
+      return c[k] ?? 0;
     }),
-  [filtered, guiSort.key, guiSort.dir]);
+  [filteredClients, guiSort.key, guiSort.dir]);
 
-  const { page, go, totalPages, slice, total } = usePag(sortedFiltered);
+  const { page, go, totalPages, slice, total } = usePag(sortedClients);
 
-  const summary = useMemo(() => {
-    if (!filtered.length) return null;
-    return {
-      totalQ: filtered.reduce((s, r) => s + r.cantidad, 0),
-      prods:  new Set(filtered.map((r) => r.producto)).size,
-      dias:   new Set(filtered.map((r) => r.fecha?.toISOString().slice(0, 10)).filter(Boolean)).size,
-    };
-  }, [filtered]);
+  const panelRows = useMemo(() => {
+    if (!panelClient) return [];
+    return [...panelClient.rows].sort((a, b) => (b.fecha?.getTime() ?? 0) - (a.fecha?.getTime() ?? 0));
+  }, [panelClient]);
 
   const handleExport = () => {
-    if (!filtered.length) return;
-    const ws = XLSX.utils.json_to_sheet(filtered.map((r) => ({
+    if (!panelClient) return;
+    const ws = XLSX.utils.json_to_sheet(panelRows.map((r) => ({
       Fecha: r.fecha ? fmtDate(r.fecha) : "", Cliente: r.cliente, Producto: r.producto,
       "Marca / Lote": r.lote, "Precio Un.": r.precioUn, Cantidad: r.cantidad,
     })));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Compras Cliente");
-    XLSX.writeFile(wb, `historial_${(search || "cliente").replace(/\s+/g, "_")}.xlsx`);
+    XLSX.writeFile(wb, `historial_${panelClient.cliente.replace(/\s+/g, "_")}.xlsx`);
   };
 
-  const STH = (props) => <SortTh {...props} currentKey={guiSort.key} dir={guiSort.dir} onSort={guiSort.toggle} />;
+  const globalStats = useMemo(() => ({
+    totalClientes: clientSummary.length,
+    totalLineas:   rows.length,
+    totalProds:    new Set(rows.map((r) => r.producto).filter(Boolean)).size,
+  }), [clientSummary, rows]);
+
+  const STH = (props) => <SortTh {...props} currentKey={guiSort.key} dir={guiSort.dir} onSort={guiSort.toggle}/>;
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-3 items-center">
-        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Escribe el nombre del cliente para ver su historial…" />
-        {filtered.length > 0 && (
-          <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold rounded-lg transition-colors shrink-0">
-            <Download size={15} /> Exportar Excel
-          </button>
-        )}
-      </div>
-      {search.trim() && summary && (
-        <div className="grid grid-cols-3 gap-3">
-          <Card label="Cantidad Total"      value={fmt(summary.totalQ, 2)} sub="kg / unidades" />
-          <Card label="Productos Distintos" value={summary.prods} />
-          <Card label="Días con Compra"     value={summary.dias} />
-        </div>
-      )}
-      {!search.trim() && (
-        <div className="flex flex-col items-center justify-center py-24 text-gray-600 gap-3">
-          <ShoppingCart size={44} className="opacity-15" />
-          <p className="text-sm">Ingresa el nombre de un cliente para ver su historial de compras</p>
-        </div>
-      )}
-      {search.trim() && filtered.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-24 text-gray-600 gap-3">
-          <Search size={44} className="opacity-15" />
-          <p className="text-sm">No se encontraron resultados para <span className="text-gray-400">"{search}"</span></p>
-        </div>
-      )}
-      {sortedFiltered.length > 0 && (
-        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-800/60">
-                <tr>
-                  <STH label="Fecha"      sk="fecha"    />
-                  <STH label="Cliente"    sk="cliente"  />
-                  <STH label="Producto"   sk="producto" />
-                  <STH label="Marca/Lote" sk="lote"     />
-                  <STH label="Precio Un." sk="precioUn" right />
-                  <STH label="Cantidad"   sk="cantidad" right />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800/60">
-                {slice.map((r, i) => (
-                  <tr key={i} className="hover:bg-gray-800/30 transition-colors">
-                    <Td ch={r.fecha ? fmtDate(r.fecha) : "-"} dim />
-                    <td className="px-3 py-2 text-sm font-medium text-white max-w-[180px]"><span className="block truncate">{r.cliente}</span></td>
-                    <Td ch={r.producto} />
-                    <td className="px-3 py-2 text-xs text-gray-500 max-w-[160px]"><span className="block truncate" title={r.lote}>{r.lote}</span></td>
-                    <Td ch={"$" + fmtM(r.precioUn)} right />
-                    <Td ch={fmt(r.cantidad, 2)} right dim />
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {/* Panel */}
+      {panelClient && (
+        <DetailPanel
+          title={panelClient.cliente}
+          subtitle={`${panelClient.prods} productos · ${panelClient.rows.length} líneas`}
+          onClose={() => setPanelClient(null)}>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <Card label="Líneas Totales"      value={panelClient.rows.length}    color="text-white"/>
+              <Card label="Productos Distintos" value={panelClient.prods}           color="text-blue-300"/>
+              <Card label="Cantidad Total"      value={fmt(panelClient.totalQ, 2)} color="text-emerald-300" sub="kg / unid."/>
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={handleExport}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold rounded-lg transition-colors">
+                <Download size={13}/> Exportar Excel
+              </button>
+            </div>
+            <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
+              <div style={{overflowX:"auto",maxHeight:480,overflowY:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead style={{background:"#1f2937",position:"sticky",top:0}}>
+                    <tr>
+                      <Th ch="Fecha"/><Th ch="Producto"/><Th ch="Marca/Lote"/>
+                      <Th ch="Precio Un." right/><Th ch="Cantidad" right/>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {panelRows.map((r, i) => (
+                      <tr key={i} style={{borderBottom:"1px solid rgba(31,41,55,0.6)"}}>
+                        <Td ch={r.fecha ? fmtDate(r.fecha) : "-"} dim/>
+                        <td style={{padding:"8px 12px",fontSize:13,color:"#E5E7EB",maxWidth:220}}>
+                          <span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.producto}</span>
+                        </td>
+                        <td style={{padding:"8px 12px",fontSize:11,color:"#6B7280",maxWidth:140}}>
+                          <span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.lote}</span>
+                        </td>
+                        <Td ch={"$" + fmtM(r.precioUn)} right/>
+                        <Td ch={fmt(r.cantidad, 2)} right dim/>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
-          <Pager page={page} totalPages={totalPages} go={go} total={total} />
-        </div>
+        </DetailPanel>
       )}
+
+      {/* Header KPIs */}
+      <div className="grid grid-cols-3 gap-3">
+        <Card label="Clientes Activos"    value={globalStats.totalClientes}                     color="text-blue-300"    sub="Con despachos registrados"/>
+        <Card label="Total Líneas"        value={globalStats.totalLineas.toLocaleString("es-CL")} color="text-white"/>
+        <Card label="Productos Distintos" value={globalStats.totalProds}                         color="text-emerald-300"/>
+      </div>
+
+      {/* Search */}
+      <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar cliente…"/>
+
+      {/* Client summary table */}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-gray-700 text-xs text-gray-500">
+          {filteredClients.length !== clientSummary.length
+            ? `${filteredClients.length} de ${clientSummary.length} clientes`
+            : `${clientSummary.length} clientes — haz clic para ver historial de despachos`}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-800/60">
+              <tr>
+                <STH label="Cliente"         sk="cliente"   />
+                <STH label="Líneas"          sk="compras"   right/>
+                <STH label="Productos"       sk="prods"     right/>
+                <STH label="Cantidad Total"  sk="totalQ"    right/>
+                <STH label="Último Despacho" sk="lastFecha" right/>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {slice.map((c) => (
+                <tr key={c.cliente} onClick={() => setPanelClient(c)} style={{cursor:"pointer"}}
+                  className="hover:bg-blue-900/20 transition-colors">
+                  <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[220px]">
+                    <span className="block truncate" title={c.cliente}>{c.cliente}</span>
+                  </td>
+                  <Td ch={c.rows.length.toLocaleString("es-CL")} right dim/>
+                  <Td ch={c.prods}                                right dim/>
+                  <Td ch={fmt(c.totalQ, 2)}                       right color="text-blue-300"/>
+                  <Td ch={c.lastFecha ? fmtDate(c.lastFecha) : "-"} right dim/>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pager page={page} totalPages={totalPages} go={go} total={total}/>
+      </div>
     </div>
   );
 };
@@ -1186,10 +1297,30 @@ const GuiasTab = ({ data }) => {
 //  TAB 3 — COMPRAS / PROVEEDORES
 // ═══════════════════════════════════════════════
 
+const SvgSparkline = ({ history }) => {
+  if (!history || history.length < 2) return null;
+  const W = 120, H = 36, PAD = 4;
+  const prices = history.map(h => h.p);
+  const minP = prices.reduce((m, v) => Math.min(m, v), Infinity);
+  const maxP = prices.reduce((m, v) => Math.max(m, v), -Infinity);
+  const range = maxP - minP || 1;
+  const xP = (i) => PAD + (i / (history.length - 1)) * (W - PAD * 2);
+  const yP = (v) => H - PAD - ((v - minP) / range) * (H - PAD * 2);
+  const lastColor = history[history.length-1].p >= history[0].p ? "#EF4444" : "#10B981";
+  const pts = history.map((h, i) => `${xP(i)},${yP(h.p)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H}>
+      <polyline points={pts} fill="none" stroke={lastColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
+      <circle cx={xP(history.length-1)} cy={yP(history[history.length-1].p)} r="2.5" fill={lastColor}/>
+    </svg>
+  );
+};
+
 const ComprasTab = ({ data }) => {
-  const [search,     setSearch]     = useState("");
-  const [modalFolio, setModalFolio] = useState(null);
-  const compSort = useSort("fecha", "desc");
+  const [search,        setSearch]        = useState("");
+  const [panelSupplier, setPanelSupplier] = useState(null);
+  const [modalFolio,    setModalFolio]    = useState(null);
+  const compSort = useSort("totalC", "desc");
 
   const rows = useMemo(() =>
     data.map((r) => ({
@@ -1203,92 +1334,195 @@ const ComprasTab = ({ data }) => {
     })).filter((r) => r.proveedor),
   [data]);
 
-  const filtered = useMemo(() => {
-    if (!search.trim()) return rows;
-    const q = search.toLowerCase();
-    return rows.filter((r) =>
-      r.proveedor.toLowerCase().includes(q) || r.producto.toLowerCase().includes(q)
+  const supplierSummary = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => {
+      const k = r.proveedor;
+      if (!map[k]) map[k] = { proveedor: k, rows: [], prods: new Set(), totalC: 0, totalQ: 0, lastFecha: null };
+      map[k].rows.push(r);
+      if (r.producto) map[k].prods.add(r.producto);
+      map[k].totalC += r.total;
+      map[k].totalQ += r.cantidad;
+      if (!map[k].lastFecha || (r.fecha && r.fecha > map[k].lastFecha)) map[k].lastFecha = r.fecha;
+    });
+    return Object.values(map).map((s) => ({ ...s, prods: s.prods.size }));
+  }, [rows]);
+
+  const filteredSuppliers = useMemo(() => {
+    if (!search.trim()) return supplierSummary;
+    const q = normStr(search);
+    return supplierSummary.filter((s) =>
+      normStr(s.proveedor).includes(q) || s.rows.some((r) => normStr(r.producto).includes(q))
     );
-  }, [rows, search]);
+  }, [supplierSummary, search]);
 
-  const sortedFiltered = useMemo(() =>
-    applySort(filtered, compSort.key, compSort.dir, (r, k) => {
-      if (k === "fecha")     return r.fecha?.getTime() ?? 0;
-      if (k === "proveedor") return r.proveedor.toLowerCase();
-      if (k === "producto")  return r.producto.toLowerCase();
-      return r[k] ?? 0;
+  const sortedSuppliers = useMemo(() =>
+    applySort(filteredSuppliers, compSort.key, compSort.dir, (s, k) => {
+      if (k === "proveedor")  return s.proveedor.toLowerCase();
+      if (k === "lastFecha")  return s.lastFecha?.getTime() ?? 0;
+      if (k === "compras")    return s.rows.length;
+      return s[k] ?? 0;
     }),
-  [filtered, compSort.key, compSort.dir]);
+  [filteredSuppliers, compSort.key, compSort.dir]);
 
-  const { page, go, totalPages, slice, total } = usePag(sortedFiltered);
+  const { page, go, totalPages, slice, total } = usePag(sortedSuppliers);
 
-  const summary = useMemo(() => {
-    if (!search.trim() || !filtered.length) return null;
-    return {
-      totalC: filtered.reduce((s, r) => s + r.total,   0),
-      totalQ: filtered.reduce((s, r) => s + r.cantidad, 0),
-      prods:  new Set(filtered.map((r) => r.producto)).size,
-    };
-  }, [filtered, search]);
+  const panelRows = useMemo(() => {
+    if (!panelSupplier) return [];
+    return [...panelSupplier.rows].sort((a, b) => (b.fecha?.getTime() ?? 0) - (a.fecha?.getTime() ?? 0));
+  }, [panelSupplier]);
 
-  const STH = (props) => <SortTh {...props} currentKey={compSort.key} dir={compSort.dir} onSort={compSort.toggle} />;
+  const panelProductGroups = useMemo(() => {
+    if (!panelSupplier) return [];
+    const map = {};
+    panelSupplier.rows.forEach((r) => {
+      const k = r.producto || "Sin producto";
+      if (!map[k]) map[k] = { producto: k, totalC: 0, totalQ: 0, history: [], lastFecha: null };
+      map[k].totalC += r.total;
+      map[k].totalQ += r.cantidad;
+      if (r.precioUn > 0 && r.fecha) map[k].history.push({ fecha: r.fecha, p: r.precioUn });
+      if (!map[k].lastFecha || (r.fecha && r.fecha > map[k].lastFecha)) map[k].lastFecha = r.fecha;
+    });
+    return Object.values(map).map((g) => {
+      const hs = [...g.history].sort((a, b) => a.fecha - b.fecha);
+      const prices = hs.map(h => h.p);
+      const precioMin = prices.length ? prices.reduce((m, v) => Math.min(m, v), Infinity) : 0;
+      const precioMax = prices.length ? prices.reduce((m, v) => Math.max(m, v), -Infinity) : 0;
+      const precioUltimo = hs.length ? hs[hs.length - 1].p : 0;
+      return { ...g, history: hs, precioMin, precioMax, precioUltimo };
+    }).sort((a, b) => b.totalC - a.totalC);
+  }, [panelSupplier]);
+
+  const globalStats = useMemo(() => ({
+    totalProveedores: supplierSummary.length,
+    totalLineas:      rows.length,
+    totalC:           rows.reduce((s, r) => s + r.total, 0),
+  }), [supplierSummary, rows]);
+
+  const STH = (props) => <SortTh {...props} currentKey={compSort.key} dir={compSort.dir} onSort={compSort.toggle}/>;
+  const daysSince = (d) => !d ? null : Math.floor((Date.now() - d.getTime()) / 86400000);
 
   return (
     <div className="space-y-4">
-      {modalFolio && <CompraModal folio={modalFolio} allRows={rows} onClose={() => setModalFolio(null)} />}
+      {modalFolio && <CompraModal folio={modalFolio} allRows={rows} onClose={() => setModalFolio(null)}/>}
+
+      {/* Panel */}
+      {panelSupplier && !modalFolio && (
+        <DetailPanel
+          title={panelSupplier.proveedor}
+          subtitle={`${panelSupplier.prods} productos · ${panelSupplier.rows.length} líneas`}
+          onClose={() => setPanelSupplier(null)}>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <Card label="Total Comprado"      value={"$" + fmtM(panelSupplier.totalC)} color="text-purple-300"/>
+              <Card label="Cantidad Total"       value={fmt(panelSupplier.totalQ, 2)}     color="text-blue-300" sub="kg / unid."/>
+              <Card label="Productos Distintos"  value={panelSupplier.prods}               color="text-emerald-300"/>
+            </div>
+            <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
+              <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,
+                color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                Evolución de precios por producto — {panelProductGroups.length}
+              </div>
+              <div style={{overflowX:"auto",maxHeight:480,overflowY:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead style={{background:"#1f2937",position:"sticky",top:0}}>
+                    <tr>
+                      <Th ch="Producto"/>
+                      <Th ch="Tendencia" right/>
+                      <Th ch="P. Mínimo" right/><Th ch="P. Máximo" right/><Th ch="Último P." right/>
+                      <Th ch="Total Comprado" right/>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {panelProductGroups.map((g, i) => (
+                      <tr key={i} style={{borderBottom:"1px solid rgba(31,41,55,0.6)"}}>
+                        <td style={{padding:"8px 12px",fontSize:13,color:"#E5E7EB",maxWidth:200}}>
+                          <span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.producto}</span>
+                          <span style={{fontSize:11,color:"#6B7280"}}>{g.lastFecha ? fmtDate(g.lastFecha) : ""} · {fmt(g.totalQ, 2)} u.</span>
+                        </td>
+                        <td style={{padding:"8px 12px",textAlign:"right"}}>
+                          <SvgSparkline history={g.history}/>
+                        </td>
+                        <Td ch={g.precioMin > 0 ? "$" + fmtM(g.precioMin) : "-"} right color="text-emerald-300"/>
+                        <Td ch={g.precioMax > 0 ? "$" + fmtM(g.precioMax) : "-"} right color="text-red-400"/>
+                        <Td ch={g.precioUltimo > 0 ? "$" + fmtM(g.precioUltimo) : "-"} right color="text-yellow-300" bold/>
+                        <Td ch={"$" + fmtM(g.totalC)} right color="text-purple-300" bold/>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </DetailPanel>
+      )}
+
+      {/* Header KPIs */}
+      <div className="grid grid-cols-3 gap-3">
+        <Card label="Proveedores"    value={globalStats.totalProveedores}                     color="text-purple-300" sub="Activos registrados"/>
+        <Card label="Total Comprado" value={"$" + fmtM(globalStats.totalC)}                  color="text-white"/>
+        <Card label="Total Líneas"   value={globalStats.totalLineas.toLocaleString("es-CL")} color="text-blue-300"/>
+      </div>
+
+      {/* Search */}
       <div className="flex items-center gap-3">
-        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar por proveedor o por producto…" />
+        <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar por proveedor o producto…"/>
         <span className="text-xs text-gray-500 shrink-0 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2">Búsqueda dual</span>
       </div>
-      {summary && (
-        <div className="grid grid-cols-3 gap-3">
-          <Card label="Total Comprado"      value={"$" + fmtM(summary.totalC)} color="text-purple-300" />
-          <Card label="Cantidad Total"      value={fmt(summary.totalQ, 2)} sub="kg / unidades" />
-          <Card label="Productos Distintos" value={summary.prods} />
-        </div>
-      )}
+
+      {/* Supplier summary table */}
       <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-gray-700 text-xs text-gray-500">
+          {filteredSuppliers.length !== supplierSummary.length
+            ? `${filteredSuppliers.length} de ${supplierSummary.length} proveedores`
+            : `${supplierSummary.length} proveedores — haz clic para ver historial de compras`}
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-800/60">
               <tr>
-                <STH label="Fecha"         sk="fecha"     />
-                <STH label="Proveedor"     sk="proveedor" />
-                <STH label="Producto"      sk="producto"  />
-                <STH label="Precio Compra" sk="precioUn"  right />
-                <STH label="Cantidad"      sk="cantidad"  right />
-                <STH label="Total Línea"   sk="total"     right />
-                <Th  ch="Ver Compra"                      right />
+                <STH label="Proveedor"       sk="proveedor" />
+                <STH label="Líneas"          sk="compras"   right/>
+                <STH label="Productos"       sk="prods"     right/>
+                <STH label="Total Comprado"  sk="totalC"    right/>
+                <STH label="Última Compra"   sk="lastFecha" right/>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/60">
-              {slice.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-800/30 transition-colors">
-                  <Td ch={r.fecha ? fmtDate(r.fecha) : "-"} dim />
-                  <td className="px-3 py-2 text-sm font-medium text-white max-w-[160px]"><span className="block truncate">{r.proveedor}</span></td>
-                  <td className="px-3 py-2 text-sm text-gray-200 max-w-[180px]"><span className="block truncate" title={r.producto}>{r.producto}</span></td>
-                  <Td ch={"$" + fmtM(r.precioUn)} right />
-                  <Td ch={fmt(r.cantidad, 2)} right dim />
-                  <Td ch={"$" + fmtM(r.total)} right color="text-purple-300" bold />
-                  <td className="px-3 py-2 text-right">
-                    <button onClick={() => setModalFolio(r.folio)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-700 hover:bg-blue-700 text-gray-300 hover:text-white text-xs rounded-lg transition-all">
-                      <Eye size={11} /> Ver Compra
-                    </button>
+              {slice.map((s) => (
+                <tr key={s.proveedor} onClick={() => setPanelSupplier(s)} style={{cursor:"pointer"}}
+                  className="hover:bg-purple-900/20 transition-colors">
+                  <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[220px]">
+                    <span className="block truncate" title={s.proveedor}>{s.proveedor}</span>
+                  </td>
+                  <Td ch={s.rows.length.toLocaleString("es-CL")} right dim/>
+                  <Td ch={s.prods}                                right dim/>
+                  <Td ch={"$" + fmtM(s.totalC)}                  right color="text-purple-300" bold/>
+                  <td style={{padding:"8px 12px",textAlign:"right"}}>
+                    {s.lastFecha ? (() => {
+                      const d = daysSince(s.lastFecha);
+                      const color = d < 30 ? "#10B981" : d < 60 ? "#F59E0B" : "#EF4444";
+                      return (
+                        <span style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>
+                          <span style={{fontSize:11,color:"#9CA3AF"}}>{fmtDate(s.lastFecha)}</span>
+                          <span style={{background:color+"22",color,border:`1px solid ${color}55`,
+                            borderRadius:99,padding:"1px 7px",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
+                            {d === 0 ? "hoy" : `hace ${d}d`}
+                          </span>
+                        </span>
+                      );
+                    })() : <span style={{color:"#6B7280"}}>-</span>}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <Pager page={page} totalPages={totalPages} go={go} total={total} />
+        <Pager page={page} totalPages={totalPages} go={go} total={total}/>
       </div>
     </div>
   );
 };
-
-
-
 
 // ═══════════════════════════════════════════════
 //  TAB 4 — OPTIMIZADOR DE PRECIOS
@@ -1763,12 +1997,11 @@ class ProductosErrorBoundary extends React.Component {
 }
 
 const ProductosTab = ({ data }) => {
-  const [search,   setSearch]   = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo,   setDateTo]   = useState("");
-  const [selected, setSelected] = useState([]);
-  const [showSugg,      setShowSugg]      = useState(false);
-  const [clientSearch,  setClientSearch]  = useState("");
+  const [search,       setSearch]       = useState("");
+  const [dateFrom,     setDateFrom]     = useState("");
+  const [dateTo,       setDateTo]       = useState("");
+  const [panelProduct, setPanelProduct] = useState(null);
+  const prodSort = useSort("venta", "desc");
 
   const rows = useMemo(() =>
     data.map((r) => ({
@@ -1782,393 +2015,245 @@ const ProductosTab = ({ data }) => {
     })).filter((r) => r.fecha && r.producto),
   [data]);
 
-  const allProducts = useMemo(() =>
-    [...new Set(rows.map((r) => r.producto))].sort(),
-  [rows]);
-
   const dateBounds = useMemo(() => {
     if (!rows.length) return { min: "", max: "" };
     const toInput = (ms) => {
       const d = new Date(ms);
       return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
     };
-    // Use reduce instead of spread to avoid stack overflow with large arrays
     let minT = Infinity, maxT = -Infinity;
     rows.forEach((r) => { const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t; });
     return { min: toInput(minT), max: toInput(maxT) };
   }, [rows]);
 
-  // Initialize date range from data bounds (only if user hasn't set them)
   useEffect(() => {
     if (dateBounds.min && !dateFrom) setDateFrom(dateBounds.min);
     if (dateBounds.max && !dateTo)   setDateTo(dateBounds.max);
   }, [dateBounds.min, dateBounds.max]);
 
-  const suggestions = useMemo(() => {
-    if (!search.trim()) return [];
-    const q = normStr(search);
-    return allProducts.filter((p) => normStr(p).includes(q) && !selected.includes(p)).slice(0, 12);
-  }, [allProducts, search, selected]);
-
-  const addProduct = (p) => { setSelected((prev) => prev.includes(p) ? prev : [...prev, p]); setSearch(""); setShowSugg(false); };
-  const removeProduct = (p) => setSelected((prev) => prev.filter((x) => x !== p));
-
-  const filtered = useMemo(() => {
-    if (!selected.length) return [];
+  const filteredRows = useMemo(() => {
     const from = dateFrom ? new Date(dateFrom) : null;
     const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
     return rows.filter((r) => {
-      if (!selected.includes(r.producto)) return false;
       if (from && r.fecha < from) return false;
       if (to   && r.fecha > to)   return false;
       return true;
     });
-  }, [rows, selected, dateFrom, dateTo]);
+  }, [rows, dateFrom, dateTo]);
 
-  const summary = useMemo(() => {
+  const productSummary = useMemo(() => {
     const map = {};
-    filtered.forEach((r) => {
-      if (!map[r.producto]) map[r.producto] = { venta: 0, contrib: 0, cantidad: 0 };
-      map[r.producto].venta    += r.venta;
-      map[r.producto].contrib  += r.contrib;
-      map[r.producto].cantidad += r.cantidad;
-    });
-    return Object.entries(map).map(([producto, v]) => ({
-      producto, ...v,
-      margen: v.venta > 0 ? (v.contrib / v.venta) * 100 : 0,
-    })).sort((a, b) => b.venta - a.venta);
-  }, [filtered]);
-
-  const trend = useMemo(() => {
-    const map = {};
-    filtered.forEach((r) => {
-      const ws = getWeekStart(r.fecha);
-      const wk = ws.toISOString().slice(0, 10);
-      if (!map[wk]) map[wk] = { label: fmtDate(ws), venta: 0, contrib: 0 };
-      map[wk].venta   += r.venta;
-      map[wk].contrib += r.contrib;
-    });
-    return Object.entries(map)
-      .sort(([a], [b]) => a.localeCompare(b))   // sort by ISO week key
-      .map(([, v]) => v);
-  }, [filtered]);
-
-  const totals = useMemo(() => ({
-    venta:   filtered.reduce((s, r) => s + r.venta,   0),
-    contrib: filtered.reduce((s, r) => s + r.contrib, 0),
-  }), [filtered]);
-
-  const clientSummary = useMemo(() => {
-    const map = {};
-    filtered.forEach((r) => {
-      const k = r.cliente || "Sin Razón Social";
-      if (!map[k]) map[k] = { cliente: k, venta: 0, contrib: 0, cantidad: 0, precios: [], lastFecha: null };
+    filteredRows.forEach((r) => {
+      const k = r.producto;
+      if (!map[k]) map[k] = { producto: k, venta: 0, contrib: 0, cantidad: 0, clientes: new Set(), rows: [] };
       map[k].venta    += r.venta;
       map[k].contrib  += r.contrib;
       map[k].cantidad += r.cantidad;
-      if (r.precioUn > 0) map[k].precios.push({ p: r.precioUn, q: r.cantidad || 1, fecha: r.fecha });
-      if (!map[k].lastFecha || (r.fecha && r.fecha > map[k].lastFecha)) map[k].lastFecha = r.fecha;
+      if (r.cliente) map[k].clientes.add(r.cliente);
+      map[k].rows.push(r);
     });
-    return Object.values(map).map((c) => {
+    return Object.values(map).map((p) => ({
+      ...p, clientes: p.clientes.size,
+      margen: p.venta > 0 ? (p.contrib / p.venta) * 100 : 0,
+    }));
+  }, [filteredRows]);
+
+  const globalStats = useMemo(() => ({
+    totalProductos: productSummary.length,
+    totalVenta:     productSummary.reduce((s, p) => s + p.venta,   0),
+    totalContrib:   productSummary.reduce((s, p) => s + p.contrib, 0),
+    totalClientes:  new Set(filteredRows.map((r) => r.cliente).filter(Boolean)).size,
+  }), [productSummary, filteredRows]);
+
+  const filteredProducts = useMemo(() => {
+    if (!search.trim()) return productSummary;
+    const q = normStr(search);
+    return productSummary.filter((p) => normStr(p.producto).includes(q));
+  }, [productSummary, search]);
+
+  const sortedProducts = useMemo(() =>
+    applySort(filteredProducts, prodSort.key, prodSort.dir, (p, k) => {
+      if (k === "producto") return p.producto.toLowerCase();
+      return p[k] ?? 0;
+    }),
+  [filteredProducts, prodSort.key, prodSort.dir]);
+
+  const { page, go, totalPages, slice, total } = usePag(sortedProducts);
+
+  const panelDetail = useMemo(() => {
+    if (!panelProduct) return null;
+    const pRows = panelProduct.rows;
+    const byWeek = {};
+    pRows.forEach((r) => {
+      const ws = getWeekStart(r.fecha);
+      const wk = ws.toISOString().slice(0, 10);
+      if (!byWeek[wk]) byWeek[wk] = { label: fmtDate(ws), venta: 0, contrib: 0 };
+      byWeek[wk].venta   += r.venta;
+      byWeek[wk].contrib += r.contrib;
+    });
+    const trend = Object.entries(byWeek).sort(([a],[b]) => a.localeCompare(b)).map(([,v]) => v);
+    const clientMap = {};
+    pRows.forEach((r) => {
+      const k = r.cliente || "Sin razón social";
+      if (!clientMap[k]) clientMap[k] = { cliente: k, venta: 0, contrib: 0, cantidad: 0, precios: [], lastFecha: null };
+      clientMap[k].venta    += r.venta;
+      clientMap[k].contrib  += r.contrib;
+      clientMap[k].cantidad += r.cantidad;
+      if (r.precioUn > 0) clientMap[k].precios.push({ p: r.precioUn, q: r.cantidad || 1, fecha: r.fecha });
+      if (!clientMap[k].lastFecha || (r.fecha && r.fecha > clientMap[k].lastFecha)) clientMap[k].lastFecha = r.fecha;
+    });
+    const totalProdVenta = Object.values(clientMap).reduce((s, c) => s + c.venta, 0);
+    const clientBreakdown = Object.values(clientMap).map((c) => {
       const ps = c.precios;
-      const precioMin  = ps.length ? ps.reduce((m, x) => Math.min(m, x.p), Infinity) : 0;
-      const precioMax  = ps.length ? ps.reduce((m, x) => Math.max(m, x.p), -Infinity) : 0;
-      const totalQ     = ps.reduce((s, x) => s + x.q, 0);
+      const precioMin = ps.length ? ps.reduce((m, x) => Math.min(m, x.p), Infinity) : 0;
+      const precioMax = ps.length ? ps.reduce((m, x) => Math.max(m, x.p), -Infinity) : 0;
+      const totalQ = ps.reduce((s, x) => s + x.q, 0);
       const precioPromedio = totalQ > 0 ? ps.reduce((s, x) => s + x.p * x.q, 0) / totalQ : 0;
-      const lastEntry  = ps.length ? ps.sort((a, b) => b.fecha - a.fecha)[0] : null;
-      const precioUltimo = lastEntry ? lastEntry.p : 0;
+      const lastEntry = ps.length ? [...ps].sort((a,b) => b.fecha - a.fecha)[0] : null;
       return {
-        ...c,
-        margen: c.venta > 0 ? (c.contrib / c.venta) * 100 : 0,
-        precioMin, precioMax, precioPromedio, precioUltimo,
-        compras: ps.length,
+        ...c, margen: c.venta > 0 ? (c.contrib / c.venta) * 100 : 0,
+        pct: totalProdVenta > 0 ? (c.venta / totalProdVenta) * 100 : 0,
+        precioMin, precioMax, precioPromedio,
+        precioUltimo: lastEntry ? lastEntry.p : 0,
       };
     }).sort((a, b) => b.venta - a.venta);
-  }, [filtered]);
+    return { ...panelProduct, trend, clientBreakdown };
+  }, [panelProduct]);
 
-  const visibleClients = useMemo(() => {
-    if (!clientSearch.trim()) return clientSummary;
-    const q = normStr(clientSearch);
-    return clientSummary.filter((c) => normStr(c.cliente).includes(q));
-  }, [clientSummary, clientSearch]);
+  const STH = (props) => <SortTh {...props} currentKey={prodSort.key} dir={prodSort.dir} onSort={prodSort.toggle}/>;
 
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <BarChart2 size={18} className="text-blue-400" />
-        <h2 className="text-base font-bold text-white">Análisis por Producto</h2>
-        <span className="text-xs text-gray-500">Compara ventas, contribución y margen de los SKUs que elijas en el período que definas</span>
-      </div>
-
-      {/* Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
-        {/* Product search */}
-        <div className="lg:col-span-2 space-y-2">
-          {selected.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {selected.map((p) => (
-                <span key={p}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border"
-                  style={{ background:"rgba(59,130,246,0.15)", borderColor:"rgba(59,130,246,0.4)", color:"#93c5fd" }}>
-                  <span className="max-w-[200px] truncate">{p}</span>
-                  <button type="button" onClick={() => removeProduct(p)} className="hover:text-white shrink-0"><X size={11}/></button>
-                </span>
-              ))}
-              {selected.length > 0 && (
-                <button type="button" onClick={() => setSelected([])}
-                  className="text-xs text-gray-500 hover:text-red-400 transition-colors px-2">
-                  Limpiar todo
-                </button>
-              )}
+    <div className="space-y-4">
+      {/* Product detail panel */}
+      {panelDetail && (
+        <DetailPanel
+          title={panelDetail.producto}
+          subtitle={`${panelDetail.clientes} cliente${panelDetail.clientes !== 1 ? "s" : ""} · ${panelDetail.rows.length.toLocaleString("es-CL")} líneas`}
+          onClose={() => setPanelProduct(null)}>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <Card label="Venta Neta"     value={"$" + fmtM(panelDetail.venta)}   color="text-blue-300"/>
+              <Card label="Contribución"   value={"$" + fmtM(panelDetail.contrib)} color="text-emerald-300"/>
+              <Card label="Margen %"       value={fmtPct(panelDetail.margen)}
+                color={panelDetail.margen > 15 ? "text-emerald-300" : panelDetail.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+              <Card label="Cantidad Total" value={fmt(panelDetail.cantidad, 2)} color="text-white" sub="kg / unid."/>
             </div>
-          )}
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"/>
-            <input
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setShowSugg(true); }}
-              onFocus={() => setShowSugg(true)}
-              onBlur={() => setTimeout(() => setShowSugg(false), 150)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  if (suggestions.length > 0) addProduct(suggestions[0]);
-                }
-                if (e.key === "Escape") { setShowSugg(false); setSearch(""); }
-              }}
-              placeholder="Buscar y agregar producto al análisis…"
-              className="w-full pl-9 pr-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50"
-            />
-            {showSugg && suggestions.length > 0 && (
-              <div className="absolute z-20 w-full mt-1 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl max-h-64 overflow-y-auto">
-                {suggestions.map((p) => (
-                  <button key={p} type="button" onMouseDown={(e) => { e.preventDefault(); addProduct(p); }}
-                    className="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-800 transition-colors">
-                    <span className="block truncate">{p}</span>
-                  </button>
-                ))}
+            {panelDetail.trend.length > 1 && (
+              <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,padding:12}}>
+                <p style={{fontSize:11,color:"#6B7280",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.05em"}}>Tendencia semanal</p>
+                <SvgTrend data={panelDetail.trend} height={90}/>
+                <div style={{display:"flex",gap:16,marginTop:4,fontSize:11,color:"#6B7280"}}>
+                  <span><span style={{display:"inline-block",width:12,height:2,background:"#3B82F6",verticalAlign:"middle",marginRight:4}}/>Venta</span>
+                  <span><span style={{display:"inline-block",width:12,height:2,background:"#10B981",verticalAlign:"middle",marginRight:4}}/>Contribución</span>
+                </div>
               </div>
             )}
-          </div>
-        </div>
-
-        {/* Date range */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <label className="text-xs text-gray-500 uppercase tracking-wide">Período de análisis</label>
-            {(dateFrom || dateTo) && (
-              <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
-                className="text-xs text-gray-600 hover:text-blue-400 transition-colors">
-                Restablecer
-              </button>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <p className="text-xs text-gray-600 mb-1">Desde</p>
-              <input type="date" value={dateFrom} min={dateBounds.min} max={dateBounds.max}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="w-full px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
-            </div>
-            <div className="flex-1">
-              <p className="text-xs text-gray-600 mb-1">Hasta</p>
-              <input type="date" value={dateTo} min={dateBounds.min} max={dateBounds.max}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="w-full px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Empty state */}
-      {selected.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-24 text-gray-600 gap-3">
-          <BarChart2 size={48} className="opacity-15"/>
-          <p className="text-sm">Busca y selecciona uno o más productos para analizar</p>
-          <p className="text-xs text-gray-700">{allProducts.length.toLocaleString("es-CL")} SKUs disponibles</p>
-        </div>
-      )}
-
-      {/* Results */}
-      {selected.length > 0 && filtered.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-600 gap-3">
-          <Search size={36} className="opacity-20"/>
-          <p className="text-sm">Sin ventas para los productos seleccionados en el período indicado</p>
-        </div>
-      )}
-
-      {selected.length > 0 && filtered.length > 0 && (
-        <div className="space-y-4">
-          {/* KPIs */}
-          <div className="grid grid-cols-3 gap-3">
-            <Card label="Venta Total Período"  value={"$" + fmtM(totals.venta)}   sub={filtered.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300"    icon={<TrendingUp size={15}/>}/>
-            <Card label="Contribución Total"   value={"$" + fmtM(totals.contrib)} sub={summary.length + " SKU" + (summary.length !== 1 ? "s" : "")} color="text-emerald-300" icon={<DollarSign size={15}/>}/>
-            <Card label="Margen % Período"     value={fmtPct(totals.venta > 0 ? (totals.contrib / totals.venta) * 100 : 0)} color="text-yellow-300"/>
-          </div>
-
-          {/* Trend chart — pure SVG, no recharts dependency */}
-          {trend.length > 1 && (() => {
-            const W = 800, H = 130, PL = 58, PR = 12, PT = 8, PB = 22;
-            const cw = W - PL - PR, ch = H - PT - PB;
-            const maxV = trend.reduce((m, d) => Math.max(m, d.venta, d.contrib), 0) || 1;
-            const xPos = (i) => PL + (i / (trend.length - 1)) * cw;
-            const yPos = (v) => PT + ch - (v / maxV) * ch;
-            const polyline = (key, color) => {
-              const pts = trend.map((d, i) => `${xPos(i)},${yPos(d[key])}`).join(" ");
-              return <polyline key={key} points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>;
-            };
-            // Y-axis ticks
-            const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => {
-              const v = maxV * f;
-              const y = yPos(v);
-              const lbl = v >= 1e6 ? (v/1e6).toFixed(1)+"M" : v >= 1e3 ? (v/1e3).toFixed(0)+"K" : v.toFixed(0);
-              return { y, lbl };
-            });
-            // X-axis ticks: first, middle, last
-            const xIdxs = trend.length <= 4
-              ? trend.map((_, i) => i)
-              : [0, Math.floor((trend.length-1)/2), trend.length-1];
-            return (
-              <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
-                <p className="text-xs text-gray-400 mb-3 uppercase tracking-wide">Tendencia Semanal</p>
-                <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{overflow:"visible"}}>
-                  {/* grid lines */}
-                  {yTicks.map((t) => (
-                    <line key={t.lbl} x1={PL} x2={W-PR} y1={t.y} y2={t.y} stroke="#374151" strokeWidth="0.5"/>
-                  ))}
-                  {/* Y labels */}
-                  {yTicks.map((t) => (
-                    <text key={"yl"+t.lbl} x={PL-4} y={t.y+3} textAnchor="end" fontSize="8" fill="#6B7280">{t.lbl}</text>
-                  ))}
-                  {/* X labels */}
-                  {xIdxs.map((i) => (
-                    <text key={"xl"+i} x={xPos(i)} y={H-2} textAnchor="middle" fontSize="8" fill="#6B7280">{trend[i].label}</text>
-                  ))}
-                  {/* lines */}
-                  {polyline("venta",   "#3B82F6")}
-                  {polyline("contrib", "#10B981")}
-                  {/* dots on first/last */}
-                  {["venta","contrib"].map((key, ki) => [0, trend.length-1].map((i) => (
-                    <circle key={key+i} cx={xPos(i)} cy={yPos(trend[i][key])} r="3"
-                      fill={ki===0?"#3B82F6":"#10B981"} stroke="#111827" strokeWidth="1.5"/>
-                  )))}
-                </svg>
-                <div className="flex gap-4 mt-1 text-xs text-gray-500">
-                  <span><span className="inline-block w-3 h-0.5 bg-blue-500 mr-1 align-middle"/>Venta Neta</span>
-                  <span><span className="inline-block w-3 h-0.5 bg-emerald-500 mr-1 align-middle"/>Contribución</span>
-                </div>
+            <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
+              <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,
+                color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                Clientes — {panelDetail.clientBreakdown.length}
               </div>
-            );
-          })()}
-
-          {/* Per-product breakdown */}
-          <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-gray-700 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-              Desglose por SKU — {summary.length} producto{summary.length !== 1 ? "s" : ""}
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-800/60">
-                  <tr>
-                    <Th ch="Producto"/>
-                    <Th ch="Venta Neta" right/>
-                    <Th ch="Contribución" right/>
-                    <Th ch="Margen %" right/>
-                    <Th ch="Cantidad" right/>
-                    <Th ch="% del Total" right/>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/60">
-                  {summary.map((s) => (
-                    <tr key={s.producto} className="hover:bg-gray-800/30 transition-colors">
-                      <td className="px-3 py-2.5 text-sm text-gray-200 max-w-xs">
-                        <span className="block truncate" title={s.producto}>{s.producto}</span>
-                      </td>
-                      <Td ch={"$" + fmtM(s.venta)}   right bold/>
-                      <Td ch={"$" + fmtM(s.contrib)}  right color="text-emerald-400"/>
-                      <Td ch={fmtPct(s.margen)} right color={s.margen > 15 ? "text-emerald-300" : s.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
-                      <Td ch={fmt(s.cantidad, 2)} right dim/>
-                      <Td ch={fmtPct(totals.venta > 0 ? (s.venta / totals.venta) * 100 : 0)} right dim/>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Client breakdown */}
-          {clientSummary.length > 0 && (
-            <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-gray-700 flex items-center gap-3 flex-wrap">
-                <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                  <ShoppingCart size={13}/>
-                  <span>
-                    Detalle por Cliente — {visibleClients.length !== clientSummary.length
-                      ? `${visibleClients.length} de ${clientSummary.length}`
-                      : `${clientSummary.length} cliente${clientSummary.length !== 1 ? "s" : ""}`}
-                  </span>
-                </div>
-                <div className="relative ml-auto">
-                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"/>
-                  <input
-                    value={clientSearch}
-                    onChange={(e) => setClientSearch(e.target.value)}
-                    placeholder="Buscar cliente…"
-                    className="pl-8 pr-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 w-52"
-                  />
-                  {clientSearch && (
-                    <button type="button" onClick={() => setClientSearch("")}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
-                      <X size={11}/>
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-800/60">
+              <div style={{overflowX:"auto",maxHeight:400,overflowY:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead style={{background:"#1f2937",position:"sticky",top:0}}>
                     <tr>
                       <Th ch="Cliente"/>
-                      <Th ch="Venta Neta" right/>
-                      <Th ch="Contribución" right/>
-                      <Th ch="Margen %" right/>
-                      <Th ch="Cantidad" right/>
-                      <Th ch="P. Mínimo" right/>
-                      <Th ch="P. Máximo" right/>
-                      <Th ch="P. Promedio" right/>
-                      <Th ch="Último Precio" right/>
+                      <Th ch="% del Prod." right/><Th ch="Venta" right/><Th ch="Margen %" right/>
+                      <Th ch="P. Promedio" right/><Th ch="Último Precio" right/><Th ch="Cantidad" right/>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-800/60">
-                    {visibleClients.length === 0
-                      ? (
-                        <tr><td colSpan="9" className="px-4 py-6 text-center text-sm text-gray-600">
-                          Sin clientes que coincidan con "{clientSearch}"
-                        </td></tr>
-                      ) : visibleClients.map((c) => (
-                      <tr key={c.cliente} className="hover:bg-gray-800/30 transition-colors">
-                        <td className="px-3 py-2.5 text-sm text-gray-200 max-w-[220px]">
-                          <span className="block truncate" title={c.cliente}>{c.cliente}</span>
-                          <span className="text-xs text-gray-600">{c.compras} línea{c.compras !== 1 ? "s" : ""}</span>
+                  <tbody>
+                    {panelDetail.clientBreakdown.map((c, i) => (
+                      <tr key={i} style={{borderBottom:"1px solid rgba(31,41,55,0.6)"}}>
+                        <td style={{padding:"8px 12px",fontSize:13,color:"#E5E7EB",maxWidth:200}}>
+                          <span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.cliente}</span>
                         </td>
-                        <Td ch={"$" + fmtM(c.venta)}   right bold/>
-                        <Td ch={"$" + fmtM(c.contrib)}  right color="text-emerald-400"/>
+                        <Td ch={fmtPct(c.pct)} right bold color={c.pct > 30 ? "text-red-400" : c.pct > 15 ? "text-yellow-300" : "text-blue-300"}/>
+                        <Td ch={"$" + fmtM(c.venta)} right bold/>
                         <Td ch={fmtPct(c.margen)} right color={c.margen > 15 ? "text-emerald-300" : c.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
-                        <Td ch={fmt(c.cantidad, 2)} right dim/>
-                        <Td ch={c.precioMin  > 0 ? "$" + fmtM(c.precioMin)       : "-"} right dim/>
-                        <Td ch={c.precioMax  > 0 ? "$" + fmtM(c.precioMax)       : "-"} right dim/>
                         <Td ch={c.precioPromedio > 0 ? "$" + fmtM(c.precioPromedio) : "-"} right color="text-blue-300"/>
-                        <Td ch={c.precioUltimo > 0 ? "$" + fmtM(c.precioUltimo)   : "-"} right bold color="text-yellow-300"/>
+                        <Td ch={c.precioUltimo  > 0 ? "$" + fmtM(c.precioUltimo)  : "-"} right color="text-yellow-300" bold/>
+                        <Td ch={fmt(c.cantidad, 2)} right dim/>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        </DetailPanel>
       )}
+
+      {/* Header KPIs */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Card label="Productos Distintos" value={globalStats.totalProductos}             color="text-blue-300"/>
+        <Card label="Venta Total Período"  value={"$" + fmtM(globalStats.totalVenta)}   color="text-white"/>
+        <Card label="Contribución Total"   value={"$" + fmtM(globalStats.totalContrib)} color="text-emerald-300"
+          sub={"Margen: " + fmtPct(globalStats.totalVenta > 0 ? (globalStats.totalContrib / globalStats.totalVenta) * 100 : 0)}/>
+        <Card label="Clientes Únicos"      value={globalStats.totalClientes}             color="text-pink-300"/>
+      </div>
+
+      {/* Filters row */}
+      <div className="flex gap-3 items-end flex-wrap">
+        <div className="flex gap-2 items-end shrink-0">
+          <div>
+            <p className="text-xs text-gray-600 mb-1">Desde</p>
+            <input type="date" value={dateFrom} min={dateBounds.min} max={dateBounds.max}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
+          </div>
+          <div>
+            <p className="text-xs text-gray-600 mb-1">Hasta</p>
+            <input type="date" value={dateTo} min={dateBounds.min} max={dateBounds.max}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
+          </div>
+          <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
+            className="text-xs text-gray-600 hover:text-blue-400 transition-colors pb-2.5">Restablecer</button>
+        </div>
+        <div className="flex-1 min-w-[200px]">
+          <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar producto…"/>
+        </div>
+      </div>
+
+      {/* Products table */}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-gray-700 text-xs text-gray-500">
+          {filteredProducts.length !== productSummary.length
+            ? `${filteredProducts.length} de ${productSummary.length} productos`
+            : `${productSummary.length} productos — haz clic para ver detalle`}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-800/60">
+              <tr>
+                <STH label="Producto"     sk="producto" />
+                <STH label="Venta Neta"   sk="venta"    right/>
+                <STH label="Contribución" sk="contrib"  right/>
+                <STH label="Margen %"     sk="margen"   right/>
+                <STH label="Cantidad"     sk="cantidad" right/>
+                <STH label="Clientes"     sk="clientes" right/>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {slice.map((p) => (
+                <tr key={p.producto} onClick={() => setPanelProduct(p)} style={{cursor:"pointer"}}
+                  className="hover:bg-blue-900/20 transition-colors">
+                  <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[260px]">
+                    <span className="block truncate" title={p.producto}>{p.producto}</span>
+                  </td>
+                  <Td ch={"$" + fmtM(p.venta)}   right bold/>
+                  <Td ch={"$" + fmtM(p.contrib)}  right color="text-emerald-400"/>
+                  <Td ch={fmtPct(p.margen)} right color={p.margen > 15 ? "text-emerald-300" : p.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+                  <Td ch={fmt(p.cantidad, 2)} right dim/>
+                  <Td ch={p.clientes} right dim/>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pager page={page} totalPages={totalPages} go={go} total={total}/>
+      </div>
     </div>
   );
 };
