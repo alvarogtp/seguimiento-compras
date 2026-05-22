@@ -21,18 +21,26 @@
     @import url('https://fonts.cdnfonts.com/css/gotham');
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800;900&display=swap');
     * { font-family: 'Gotham', 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif !important; }
-    body { margin: 0; background: #000000; }
+    body { margin: 0; background: #0A0A0F; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #0a0a0a; }
-    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #444; }
+    ::-webkit-scrollbar-track { background: #0d0d13; }
+    ::-webkit-scrollbar-thumb { background: #252535; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #353550; }
     .gold-grad {
       background: linear-gradient(90deg, #aa6b01 0%, #c88d31 28%, #b67815 54%, #c08325 78%, #b17207 100%);
       -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
-    .bg-gray-950 { background-color: #000000 !important; }
-    .bg-gray-900 { background-color: #080808 !important; }
-    .bg-gray-800 { background-color: #111111 !important; }
+    .bg-gray-950 { background-color: #0A0A0F !important; }
+    .bg-gray-900 { background-color: #0F0F16 !important; }
+    .bg-gray-800 { background-color: #161622 !important; }
+    .border-gray-700 { border-color: #21212E !important; }
+    .border-gray-800 { border-color: #1A1A26 !important; }
+    .divide-gray-800\/60 > * + * { border-color: rgba(26,26,38,0.7) !important; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.5) sepia(0.2); cursor: pointer; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fadeIn 0.18s ease-out; }
+    .card-hover { transition: border-color 0.15s, box-shadow 0.15s; }
+    .card-hover:hover { border-color: #2a2a40 !important; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
   </style>
 </head>
 <body>
@@ -239,18 +247,18 @@ const usePag = (data, size = 50) => {
 // ═══════════════════════════════════════════════
 
 const Card = ({ label, value, sub, color = "text-white", icon }) => (
-  <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-    <div className="flex items-center justify-between mb-1">
-      <span className="text-xs text-gray-400 uppercase tracking-wide">{label}</span>
+  <div className="card-hover bg-gray-800 border border-gray-700 rounded-xl p-4">
+    <div className="flex items-center justify-between mb-2">
+      <span className="text-xs font-medium text-gray-500 uppercase tracking-widest">{label}</span>
       {icon && <span className="text-gray-600">{icon}</span>}
     </div>
-    <div className={`text-xl font-bold ${color}`}>{value}</div>
-    {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
+    <div className={`text-2xl font-bold tabular-nums leading-none ${color}`}>{value}</div>
+    {sub && <div className="text-xs text-gray-500 mt-1.5 leading-snug">{sub}</div>}
   </div>
 );
 
 const Th = ({ ch, right }) => (
-  <th className={`px-3 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap ${right ? "text-right" : "text-left"}`}>
+  <th className={`px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap ${right ? "text-right" : "text-left"}`}>
     {ch}
   </th>
 );
@@ -260,8 +268,8 @@ const SortTh = ({ label, sk, currentKey, dir, onSort, right }) => {
   return (
     <th
       onClick={() => onSort(sk)}
-      className={`px-3 py-2.5 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap transition-colors group ${
-        active ? "text-blue-400" : "text-gray-400 hover:text-gray-200"
+      className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap transition-colors group ${
+        active ? "text-blue-400" : "text-gray-500 hover:text-gray-200"
       } ${right ? "text-right" : "text-left"}`}
     >
       <span className={`inline-flex items-center gap-1 ${right ? "justify-end w-full" : ""}`}>
@@ -275,14 +283,18 @@ const SortTh = ({ label, sk, currentKey, dir, onSort, right }) => {
 };
 
 const Td = ({ ch, right, dim, bold, color }) => (
-  <td className={`px-3 py-2 text-sm whitespace-nowrap ${right ? "text-right" : ""} ${dim ? "text-gray-500" : "text-gray-200"} ${bold ? "font-semibold" : ""} ${color || ""}`}>
+  <td className={`px-3 py-2.5 text-sm whitespace-nowrap ${right ? "text-right" : ""} ${dim ? "text-gray-500" : "text-gray-300"} ${bold ? "font-semibold" : ""} ${color || ""}`}>
     {ch}
   </td>
 );
 
 const Pager = ({ page, totalPages, go, total }) => (
-  <div className="flex items-center justify-between px-4 py-2.5 border-t border-gray-700/60 text-xs text-gray-500">
-    <span>{total.toLocaleString("es-CL")} registros · Pág {page + 1}/{totalPages}</span>
+  <div className="flex items-center justify-between px-4 py-3 border-t text-xs text-gray-500" style={{borderColor:"#1A1A26"}}>
+    <span className="tabular-nums">
+      <span className="text-gray-400 font-medium">{total.toLocaleString("es-CL")}</span> registros
+      <span className="mx-2 text-gray-700">·</span>
+      Pág <span className="text-gray-400 font-medium">{page + 1}</span>/{totalPages}
+    </span>
     <div className="flex gap-0.5">
       {[
         [<ChevronsLeft size={13} />, () => go(0),             page === 0],
@@ -291,7 +303,10 @@ const Pager = ({ page, totalPages, go, total }) => (
         [<ChevronsRight size={13}/>, () => go(totalPages - 1), page >= totalPages - 1],
       ].map(([icon, fn, dis], i) => (
         <button key={i} onClick={fn} disabled={dis}
-          className="p-1.5 rounded hover:bg-gray-700 disabled:opacity-25 transition-colors">
+          className="p-1.5 rounded-lg disabled:opacity-20 transition-colors"
+          style={{color:"#6B7280"}}
+          onMouseEnter={e => { if (!dis) e.currentTarget.style.background = "#1e1e2e"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
           {icon}
         </button>
       ))}
@@ -301,16 +316,27 @@ const Pager = ({ page, totalPages, go, total }) => (
 
 const SearchBar = ({ value, onChange, placeholder }) => (
   <div className="relative flex-1 min-w-0">
-    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{color:"#444458"}} />
     <input
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full pl-9 pr-8 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-all"
+      className="w-full pl-9 pr-8 py-2.5 rounded-lg text-sm text-white transition-all"
+      style={{
+        background:"#0F0F16",
+        border:"1px solid #21212E",
+        outline:"none",
+        color:"#E5E7EB",
+      }}
+      onFocus={e=>{e.target.style.borderColor="#3B4DE8";e.target.style.boxShadow="0 0 0 2px rgba(59,77,232,0.15)";}}
+      onBlur={e=>{e.target.style.borderColor="#21212E";e.target.style.boxShadow="none";}}
     />
     {value && (
       <button onClick={() => onChange("")}
-        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+        className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
+        style={{color:"#444458"}}
+        onMouseEnter={e=>e.currentTarget.style.color="#fff"}
+        onMouseLeave={e=>e.currentTarget.style.color="#444458"}>
         <X size={13} />
       </button>
     )}
@@ -570,7 +596,7 @@ const UploadScreen = ({ onFiles, loading, detected, hasData, onBack }) => {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 gap-6"
-      style={{ background: "#000", position: "relative" }}>
+      style={{ background: "#0A0A0F", position: "relative" }}>
       <LogoBg />
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "24px", width: "100%" }}>
 
@@ -586,25 +612,30 @@ const UploadScreen = ({ onFiles, loading, detected, hasData, onBack }) => {
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onClick={() => inputRef.current?.click()}
-        className="w-full max-w-lg border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all select-none"
+        className="w-full max-w-lg border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all select-none"
         style={{
-          borderColor: dragging ? "#c88d31" : "#2a2a2a",
-          background:  dragging ? "rgba(200,141,49,0.05)" : "rgba(10,10,10,0.8)",
+          borderColor: dragging ? "#c88d31" : "#1e1e2e",
+          background:  dragging ? "rgba(200,141,49,0.06)" : "rgba(15,15,22,0.9)",
+          boxShadow:   dragging ? "0 0 32px rgba(200,141,49,0.08)" : "none",
         }}
       >
         {loading
           ? <div className="flex flex-col items-center gap-3">
-              <Loader2 size={36} className="animate-spin" style={{ color: "#c88d31" }} />
-              <p className="font-medium" style={{ color: "#c88d31" }}>Procesando archivos…</p>
+              <Loader2 size={32} className="animate-spin" style={{ color: "#c88d31" }} />
+              <p className="font-semibold text-sm" style={{ color: "#c88d31" }}>Procesando archivos…</p>
             </div>
           : <div className="flex flex-col items-center gap-3">
-              <Upload size={36} style={{ color: "#5a4010" }} />
-              <p className="font-semibold text-lg" style={{ color: "#c88d31" }}>
-                Arrastra todos tus archivos aquí
-              </p>
-              <p className="text-sm" style={{ color: "#5a4010" }}>
-                CSV · XLSX — se distribuyen automáticamente por pestaña
-              </p>
+              <div className="p-4 rounded-2xl" style={{background:"rgba(200,141,49,0.07)",border:"1px solid rgba(200,141,49,0.15)"}}>
+                <Upload size={28} style={{ color: "#8a6020" }} />
+              </div>
+              <div>
+                <p className="font-bold text-base" style={{ color: "#c88d31" }}>
+                  Arrastra todos tus archivos aquí
+                </p>
+                <p className="text-xs mt-1" style={{ color: "#443010" }}>
+                  CSV · XLSX — se distribuyen automáticamente por pestaña
+                </p>
+              </div>
             </div>}
         <input ref={inputRef} type="file" multiple accept=".csv,.xlsx,.xls"
           className="hidden" onChange={(e) => onFiles(e.target.files)} />
@@ -618,25 +649,28 @@ const UploadScreen = ({ onFiles, loading, detected, hasData, onBack }) => {
             : !!detected[r.key];
           return (
             <div key={r.key}
-              className="rounded-xl p-3 text-xs flex items-start gap-2 transition-all"
+              className="rounded-xl p-3 text-xs flex items-start gap-2.5 transition-all"
               style={{
-                border:     isDetected ? "1px solid rgba(200,141,49,0.5)" : "1px solid #1a1a1a",
-                background: isDetected ? "rgba(200,141,49,0.06)" : "rgba(8,8,8,0.9)",
+                border:     isDetected ? "1px solid rgba(200,141,49,0.4)" : "1px solid #181824",
+                background: isDetected ? "rgba(200,141,49,0.07)" : "rgba(15,15,22,0.8)",
               }}>
-              <span className="shrink-0 mt-0.5" style={{ color: isDetected ? "#c88d31" : "#3a3a3a" }}>
-                {r.icon}
-              </span>
+              <div className="shrink-0 mt-0.5 p-1 rounded-md" style={{background: isDetected ? "rgba(200,141,49,0.15)" : "rgba(255,255,255,0.03)"}}>
+                <span style={{ color: isDetected ? "#c88d31" : "#2a2a3a" }}>{r.icon}</span>
+              </div>
               <div className="min-w-0">
                 <p className="font-semibold truncate"
-                  style={{ color: isDetected ? "#c88d31" : "#444" }}>
+                  style={{ color: isDetected ? "#c88d31" : "#333345" }}>
                   {r.label}
                 </p>
-                <p className="mt-0.5 truncate" style={{ color: isDetected ? "#8a6020" : "#2a2a2a" }}>
+                <p className="mt-0.5 truncate" style={{ color: isDetected ? "#7a5518" : "#222230" }}>
                   {r.key === "precios" && detected.preciosCount
-                    ? `${detected.preciosCount} archivo(s) enrutado(s)`
+                    ? `${detected.preciosCount} archivo(s) cargado(s)`
                     : (detected[r.key] || r.hint)}
                 </p>
               </div>
+              {isDetected && (
+                <CheckCircle size={12} className="shrink-0 mt-0.5 ml-auto" style={{color:"#c88d31"}} />
+              )}
             </div>
           );
         })}
@@ -694,26 +728,34 @@ const CompraModal = ({ folio, allRows, onClose }) => {
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl"
+    <div className="fixed inset-0 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      style={{background:"rgba(0,0,0,0.75)"}} onClick={onClose}>
+      <div className="fade-in w-full max-w-3xl max-h-[80vh] flex flex-col rounded-2xl shadow-2xl"
+        style={{background:"#0C0C14",border:"1px solid #1e1e2e"}}
         onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
+        <div className="flex items-center justify-between px-5 py-4" style={{borderBottom:"1px solid #1a1a28"}}>
           <div>
-            <h2 className="font-bold text-white text-base">Folio #{folio}</h2>
-            <p className="text-xs text-gray-400 mt-0.5">{proveedor} · {fecha} · {items.length} ítem{items.length !== 1 ? "s" : ""}</p>
+            <h2 className="font-bold text-white text-base">Folio <span style={{color:"#c88d31"}}>#{folio}</span></h2>
+            <p className="text-xs mt-0.5" style={{color:"#555570"}}>{proveedor} · {fecha} · {items.length} ítem{items.length !== 1 ? "s" : ""}</p>
           </div>
-          <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors">
-            <X size={16} />
+          <button onClick={onClose}
+            className="p-1.5 rounded-lg transition-colors"
+            style={{color:"#6B7280",border:"1px solid #1e1e2e",background:"rgba(255,255,255,0.04)"}}
+            onMouseEnter={e=>{e.currentTarget.style.color="#fff";}}
+            onMouseLeave={e=>{e.currentTarget.style.color="#6B7280";}}>
+            <X size={15} />
           </button>
         </div>
         <div className="overflow-y-auto flex-1">
           <table className="w-full">
-            <thead className="bg-gray-800/60 sticky top-0">
+            <thead className="sticky top-0" style={{background:"#111119"}}>
               <tr><Th ch="Producto" /><Th ch="Cantidad" right /><Th ch="Precio Un." right /><Th ch="Total" right /></tr>
             </thead>
-            <tbody className="divide-y divide-gray-800/60">
+            <tbody>
               {items.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-800/30">
+                <tr key={i} style={{borderBottom:"1px solid rgba(26,26,38,0.7)"}}
+                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.02)"}
+                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                   <td className="px-3 py-2.5 text-sm text-gray-200">{r.producto}</td>
                   <Td ch={fmt(r.cantidad, 2)} right dim />
                   <Td ch={"$" + fmtM(r.precioUn)} right />
@@ -723,12 +765,18 @@ const CompraModal = ({ folio, allRows, onClose }) => {
             </tbody>
           </table>
         </div>
-        <div className="px-5 py-3.5 border-t border-gray-700 flex items-center justify-between bg-gray-800/30 rounded-b-2xl">
+        <div className="px-5 py-4 flex items-center justify-between rounded-b-2xl" style={{borderTop:"1px solid #1a1a28",background:"rgba(255,255,255,0.02)"}}>
           <div className="text-sm">
-            <span className="text-gray-400">Total Factura: </span>
-            <span className="font-bold text-purple-300 text-base">${fmtM(total)}</span>
+            <span style={{color:"#555570"}}>Total Factura: </span>
+            <span className="font-bold text-purple-300 text-lg tabular-nums">${fmtM(total)}</span>
           </div>
-          <button onClick={onClose} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors">Cerrar</button>
+          <button onClick={onClose}
+            className="px-4 py-2 text-sm rounded-lg transition-colors font-medium"
+            style={{background:"#1a1a28",color:"#9CA3AF",border:"1px solid #252535"}}
+            onMouseEnter={e=>{e.currentTarget.style.background="#222235";}}
+            onMouseLeave={e=>{e.currentTarget.style.background="#1a1a28";}}>
+            Cerrar
+          </button>
         </div>
       </div>
     </div>
@@ -797,23 +845,27 @@ const DetailPanel = ({ title, subtitle, onClose, children }) => {
   }, []);
   return (
     <div style={{position:"fixed",inset:0,zIndex:50,display:"flex",alignItems:"stretch"}}>
-      <div style={{flex:1,background:"rgba(0,0,0,0.55)",backdropFilter:"blur(2px)"}} onClick={onClose}/>
-      <div style={{width:"min(640px,94vw)",background:"#090f1a",borderLeft:"1px solid #1f2937",
-        display:"flex",flexDirection:"column",boxShadow:"-8px 0 32px rgba(0,0,0,0.6)"}}>
-        <div style={{padding:"14px 20px",borderBottom:"1px solid #1f2937",display:"flex",
-          alignItems:"center",gap:10,position:"sticky",top:0,background:"#090f1a",zIndex:1}}>
+      <div style={{flex:1,background:"rgba(0,0,0,0.65)",backdropFilter:"blur(4px)"}} onClick={onClose}/>
+      <div className="fade-in" style={{width:"min(660px,96vw)",background:"#0C0C14",
+        borderLeft:"1px solid #1e1e2e",display:"flex",flexDirection:"column",
+        boxShadow:"-12px 0 48px rgba(0,0,0,0.7)"}}>
+        <div style={{padding:"16px 20px",borderBottom:"1px solid #1a1a28",display:"flex",
+          alignItems:"center",gap:12,position:"sticky",top:0,background:"#0C0C14",zIndex:1}}>
           <button type="button" onClick={onClose}
-            style={{color:"#6B7280",padding:4,borderRadius:6,border:"none",
-              background:"rgba(255,255,255,0.05)",cursor:"pointer",display:"flex"}}>
+            style={{color:"#6B7280",padding:"5px",borderRadius:8,border:"1px solid #1e1e2e",
+              background:"rgba(255,255,255,0.04)",cursor:"pointer",display:"flex",
+              transition:"all 0.15s"}}
+            onMouseEnter={e=>{e.currentTarget.style.color="#fff";e.currentTarget.style.borderColor="#2e2e44";}}
+            onMouseLeave={e=>{e.currentTarget.style.color="#6B7280";e.currentTarget.style.borderColor="#1e1e2e";}}>
             <X size={15}/>
           </button>
           <div style={{flex:1,minWidth:0}}>
-            <p style={{fontWeight:700,color:"white",fontSize:14,margin:0,
+            <p style={{fontWeight:700,color:"white",fontSize:15,margin:0,
               overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</p>
-            {subtitle && <p style={{fontSize:11,color:"#6B7280",margin:0}}>{subtitle}</p>}
+            {subtitle && <p style={{fontSize:11,color:"#555570",margin:"2px 0 0 0",letterSpacing:"0.02em"}}>{subtitle}</p>}
           </div>
         </div>
-        <div style={{padding:"18px 20px",flex:1,overflowY:"auto"}}>{children}</div>
+        <div style={{padding:"20px",flex:1,overflowY:"auto"}}>{children}</div>
       </div>
     </div>
   );
@@ -1037,10 +1089,16 @@ const VentasTab = ({ data }) => {
             <span className="font-semibold text-white">Top 20 Clientes</span>
             <span className="text-xs text-gray-600">— clic para ver detalle</span>
           </div>
-          <div className="flex gap-1">
+          <div className="flex gap-1 p-0.5 rounded-lg" style={{background:"#0F0F16",border:"1px solid #1a1a28"}}>
             {[["venta","Por Venta"],["contrib","Por Contribución"]].map(([k,l]) => (
               <button key={k} type="button" onClick={() => setShowTop(k)}
-                className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${showTop === k ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40" : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"}`}>{l}</button>
+                className="px-2.5 py-1 rounded-md text-xs font-semibold transition-all"
+                style={showTop === k
+                  ? {background:"rgba(234,179,8,0.18)",color:"#FCD34D",border:"1px solid rgba(234,179,8,0.35)"}
+                  : {background:"transparent",color:"#555570",border:"1px solid transparent"}}
+                onMouseEnter={e=>{ if(showTop!==k) e.currentTarget.style.color="#9CA3AF"; }}
+                onMouseLeave={e=>{ if(showTop!==k) e.currentTarget.style.color="#555570"; }}
+              >{l}</button>
             ))}
           </div>
         </div>
@@ -1076,10 +1134,16 @@ const VentasTab = ({ data }) => {
       {/* Search + metric */}
       <div className="flex items-center gap-3 flex-wrap">
         <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar cliente…"/>
-        <div className="flex gap-1 shrink-0">
+        <div className="flex gap-1 shrink-0 p-1 rounded-xl" style={{background:"#0F0F16",border:"1px solid #1a1a28"}}>
           {[["venta","Venta Neta"],["contrib","Contribución"],["margen","Margen %"]].map(([k,l]) => (
             <button key={k} type="button" onClick={() => setMetric(k)}
-              className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all ${metric === k ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"}`}>{l}</button>
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+              style={metric === k
+                ? {background:"rgba(59,130,246,0.2)",color:"#93C5FD",border:"1px solid rgba(59,130,246,0.35)"}
+                : {background:"transparent",color:"#555570",border:"1px solid transparent"}}
+              onMouseEnter={e=>{ if(metric!==k) e.currentTarget.style.color="#9CA3AF"; }}
+              onMouseLeave={e=>{ if(metric!==k) e.currentTarget.style.color="#555570"; }}
+            >{l}</button>
           ))}
         </div>
       </div>
@@ -1760,6 +1824,18 @@ const PreciosTab = ({ pendingFiles }) => {
     return map;
   }, [filtered]);
 
+  const avgByGroup = useMemo(() => {
+    const sums = {}, counts = {};
+    filtered.forEach((r) => {
+      if (!sums[r.groupKey]) { sums[r.groupKey] = 0; counts[r.groupKey] = 0; }
+      sums[r.groupKey]  += r.precio;
+      counts[r.groupKey]++;
+    });
+    const avgs = {};
+    Object.keys(sums).forEach(k => avgs[k] = counts[k] > 1 ? sums[k] / counts[k] : null);
+    return avgs;
+  }, [filtered]);
+
   const { page, go, totalPages, slice, total } = usePag(sortedRows);
   const STH = (props) => <SortTh {...props} currentKey={priceSort.key} dir={priceSort.dir} onSort={priceSort.toggle} />;
   const proveedoresCount = new Set(filtered.map((r) => r.proveedor)).size;
@@ -1844,12 +1920,13 @@ const PreciosTab = ({ pendingFiles }) => {
           <div className="flex gap-1 flex-wrap shrink-0">
             {categories.map((c) => (
               <button key={c} onClick={() => { setCatFilter(c); go(0); }}
-                className={`px-3 py-2 rounded-lg text-xs font-medium transition-all ${
-                  catFilter === c
-                    ? "bg-emerald-700 text-white shadow-lg shadow-emerald-900/30"
-                    : "bg-gray-800 text-gray-400 hover:text-white border border-gray-700"
-                }`}>{c}
-              </button>
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                style={catFilter === c
+                  ? {background:"rgba(16,185,129,0.18)",color:"#34D399",border:"1px solid rgba(16,185,129,0.35)"}
+                  : {background:"#0F0F16",color:"#555570",border:"1px solid #1a1a28"}}
+                onMouseEnter={e=>{ if(catFilter!==c) e.currentTarget.style.color="#9CA3AF"; }}
+                onMouseLeave={e=>{ if(catFilter!==c) e.currentTarget.style.color="#555570"; }}
+              >{c}</button>
             ))}
           </div>
         </div>
@@ -1887,15 +1964,26 @@ const PreciosTab = ({ pendingFiles }) => {
               <tbody className="divide-y divide-gray-800/60">
                 {slice.map((r) => {
                   const isBest = bestByGroup[r.groupKey] === r.precio;
+                  const avg    = avgByGroup[r.groupKey];
+                  const saving = isBest && avg && avg > r.precio
+                    ? Math.round((1 - r.precio / avg) * 100) : 0;
                   return (
                     <tr key={r.uid}
                       className={`transition-colors ${
-                        isBest ? "bg-emerald-950/25 hover:bg-emerald-950/40" : "hover:bg-gray-800/30"
+                        isBest ? "bg-emerald-950/25 hover:bg-emerald-950/35" : "hover:bg-gray-800/20"
                       }`}>
                       <td className="px-3 py-2.5 text-center whitespace-nowrap">
                         {isBest
-                          ? <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs rounded-full font-semibold">
-                              <CheckCircle size={10} /> Mejor
+                          ? <span className="inline-flex items-center gap-1.5 flex-wrap justify-center">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs rounded-full font-semibold">
+                                <CheckCircle size={10} /> Mejor
+                              </span>
+                              {saving > 0 && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded-full font-bold tabular-nums"
+                                  style={{background:"rgba(16,185,129,0.12)",color:"#34d399",border:"1px solid rgba(16,185,129,0.25)"}}>
+                                  -{saving}% vs prom.
+                                </span>
+                              )}
                             </span>
                           : <span className="text-gray-700 text-xs">—</span>}
                       </td>
@@ -2197,16 +2285,22 @@ const ProductosTab = ({ data }) => {
       <div className="flex gap-3 items-end flex-wrap">
         <div className="flex gap-2 items-end shrink-0">
           <div>
-            <p className="text-xs text-gray-600 mb-1">Desde</p>
+            <p className="text-xs mb-1" style={{color:"#444458"}}>Desde</p>
             <input type="date" value={dateFrom} min={dateBounds.min} max={dateBounds.max}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
+              className="px-2.5 py-2 rounded-lg text-sm text-white"
+              style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+              onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+              onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
           </div>
           <div>
-            <p className="text-xs text-gray-600 mb-1">Hasta</p>
+            <p className="text-xs mb-1" style={{color:"#444458"}}>Hasta</p>
             <input type="date" value={dateTo} min={dateBounds.min} max={dateBounds.max}
               onChange={(e) => setDateTo(e.target.value)}
-              className="px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"/>
+              className="px-2.5 py-2 rounded-lg text-sm text-white"
+              style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+              onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+              onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
           </div>
           <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
             className="text-xs text-gray-600 hover:text-blue-400 transition-colors pb-2.5">Restablecer</button>
@@ -2259,10 +2353,14 @@ const ProductosTab = ({ data }) => {
 };
 
 const EmptyState = ({ msg, icon }) => (
-  <div className="flex flex-col items-center justify-center py-20 gap-3"
-    style={{ color: "#444" }}>
-    <div style={{ opacity: 0.12 }}>{icon}</div>
-    <p className="text-sm">{msg}</p>
+  <div className="flex flex-col items-center justify-center py-24 gap-4">
+    <div className="p-5 rounded-2xl" style={{background:"rgba(255,255,255,0.03)",border:"1px solid #1a1a28",color:"#2a2a40"}}>
+      {icon}
+    </div>
+    <div className="text-center">
+      <p className="text-sm font-medium" style={{color:"#444458"}}>{msg}</p>
+      <p className="text-xs mt-1" style={{color:"#2a2a38"}}>Carga un archivo desde el botón "Agregar archivos"</p>
+    </div>
   </div>
 );
 
@@ -2329,74 +2427,85 @@ function App() {
   );
 
   return (
-    <div className="min-h-screen text-gray-100" style={{ background: "#000", position: "relative" }}>
+    <div className="min-h-screen text-gray-100" style={{ background: "#0A0A0F", position: "relative" }}>
       <LogoBg />
 
       {/* ── Sticky nav ──────────────────────────────── */}
       <div className="sticky top-0 z-10 border-b px-5 py-3"
         style={{
-          background:   "rgba(0,0,0,0.96)",
-          backdropFilter: "blur(12px)",
-          borderColor:  "#1a1a1a",
+          background:     "rgba(10,10,15,0.97)",
+          backdropFilter: "blur(16px)",
+          borderColor:    "#1A1A26",
         }}>
         <div className="flex items-center justify-between mb-3">
-          <span className="text-sm font-semibold tracking-widest uppercase" style={{ color: "#c88d31", letterSpacing: "0.15em" }}>Dashboard Comercial</span>
+          <div className="flex items-center gap-3">
+            <GestapackLogo height={26} />
+            <div className="w-px h-4 bg-gray-800" />
+            <span className="text-xs font-medium tracking-widest uppercase" style={{ color: "#5a4010", letterSpacing: "0.2em" }}>Dashboard Comercial</span>
+          </div>
 
           <button
             onClick={() => setLoaded(false)}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-all"
             style={{
-              color:   "#c88d31",
-              border:  "1px solid rgba(200,141,49,0.3)",
-              background: "transparent",
+              color:      "#c88d31",
+              border:     "1px solid rgba(200,141,49,0.25)",
+              background: "rgba(200,141,49,0.06)",
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(200,141,49,0.1)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(200,141,49,0.14)"; e.currentTarget.style.borderColor = "rgba(200,141,49,0.45)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(200,141,49,0.06)"; e.currentTarget.style.borderColor = "rgba(200,141,49,0.25)"; }}
           >
             <Upload size={12} /> Agregar archivos
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 flex-wrap">
+        {/* Tabs — grupo Análisis / separador / grupo Operacional */}
+        <div className="flex items-center gap-1 flex-wrap">
           {TABS.map((t, i) => {
             const isActive = activeTab === i;
+            // Divisor visual entre tab 2 (Proveedores) y tab 3 (Optimizador)
+            const showDivider = i === 3;
             return (
-              <button key={i} onClick={() => setActiveTab(i)}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all"
-                style={isActive ? {
-                  background: "rgba(200,141,49,0.18)",
-                  border:     "1px solid rgba(200,141,49,0.5)",
-                  color:      "#c88d31",
-                } : {
-                  background: "transparent",
-                  border:     "1px solid transparent",
-                  color:      "#555",
-                }}
-                onMouseEnter={(e) => {
-                  if (!isActive) e.currentTarget.style.color = "#c88d31";
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive) e.currentTarget.style.color = "#555";
-                }}
-              >
-                {t.icon} {t.label}
-                {t.count != null && t.count > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full text-xs"
-                    style={{
-                      background: isActive ? "rgba(200,141,49,0.25)" : "#1a1a1a",
-                      color:      isActive ? "#c88d31" : "#555",
-                    }}>
-                    {t.count.toLocaleString("es-CL")}
-                  </span>
+              <React.Fragment key={i}>
+                {showDivider && (
+                  <div className="w-px h-5 mx-1" style={{background:"#1e1e2e"}} />
                 )}
-                {i === 3 && !isActive && (
-                  <span className="px-1.5 py-0.5 rounded-full text-xs"
-                    style={{ background: "rgba(200,141,49,0.15)", color: "#c88d31", border: "1px solid rgba(200,141,49,0.3)" }}>
-                    NUEVO
-                  </span>
-                )}
-              </button>
+                <button onClick={() => setActiveTab(i)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                  style={isActive ? {
+                    background: "rgba(200,141,49,0.15)",
+                    border:     "1px solid rgba(200,141,49,0.45)",
+                    color:      "#c88d31",
+                  } : {
+                    background: "transparent",
+                    border:     "1px solid transparent",
+                    color:      "#666680",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isActive) { e.currentTarget.style.color = "#c88d31"; e.currentTarget.style.background = "rgba(200,141,49,0.07)"; }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isActive) { e.currentTarget.style.color = "#666680"; e.currentTarget.style.background = "transparent"; }
+                  }}
+                >
+                  {t.icon} {t.label}
+                  {t.count != null && t.count > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-xs tabular-nums"
+                      style={{
+                        background: isActive ? "rgba(200,141,49,0.25)" : "rgba(255,255,255,0.05)",
+                        color:      isActive ? "#c88d31" : "#555568",
+                      }}>
+                      {t.count.toLocaleString("es-CL")}
+                    </span>
+                  )}
+                  {i === 3 && !isActive && (
+                    <span className="px-1.5 py-0.5 rounded-full text-xs"
+                      style={{ background: "rgba(200,141,49,0.12)", color: "#c88d31", border: "1px solid rgba(200,141,49,0.25)" }}>
+                      BETA
+                    </span>
+                  )}
+                </button>
+              </React.Fragment>
             );
           })}
         </div>
