@@ -834,7 +834,7 @@ const SvgTrend = ({ data, height = 90 }) => {
   );
 };
 
-// ── DetailPanel — sliding drawer from right ───────────────────────────────────
+// ── DetailPanel — centered modal (full-width detail view) ────────────────────
 const DetailPanel = ({ title, subtitle, onClose, children }) => {
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -844,13 +844,19 @@ const DetailPanel = ({ title, subtitle, onClose, children }) => {
     return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", h); };
   }, []);
   return (
-    <div style={{position:"fixed",inset:0,zIndex:50,display:"flex",alignItems:"stretch"}}>
-      <div style={{flex:1,background:"rgba(0,0,0,0.65)",backdropFilter:"blur(4px)"}} onClick={onClose}/>
-      <div className="fade-in" style={{width:"min(660px,96vw)",background:"#0C0C14",
-        borderLeft:"1px solid #1e1e2e",display:"flex",flexDirection:"column",
-        boxShadow:"-12px 0 48px rgba(0,0,0,0.7)"}}>
+    <div style={{position:"fixed",inset:0,zIndex:50,display:"flex",alignItems:"center",
+      justifyContent:"center",padding:"24px",background:"rgba(0,0,0,0.72)",backdropFilter:"blur(5px)"}}
+      onClick={onClose}>
+      <div className="fade-in" onClick={e => e.stopPropagation()}
+        style={{
+          width:"min(1280px,94vw)", height:"min(88vh,900px)",
+          background:"#0C0C14", border:"1px solid #1e1e2e",
+          borderRadius:16, display:"flex", flexDirection:"column",
+          boxShadow:"0 24px 80px rgba(0,0,0,0.8)",
+        }}>
+        {/* Header */}
         <div style={{padding:"16px 20px",borderBottom:"1px solid #1a1a28",display:"flex",
-          alignItems:"center",gap:12,position:"sticky",top:0,background:"#0C0C14",zIndex:1}}>
+          alignItems:"center",gap:12,flexShrink:0}}>
           <button type="button" onClick={onClose}
             style={{color:"#6B7280",padding:"5px",borderRadius:8,border:"1px solid #1e1e2e",
               background:"rgba(255,255,255,0.04)",cursor:"pointer",display:"flex",
@@ -865,6 +871,7 @@ const DetailPanel = ({ title, subtitle, onClose, children }) => {
             {subtitle && <p style={{fontSize:11,color:"#555570",margin:"2px 0 0 0",letterSpacing:"0.02em"}}>{subtitle}</p>}
           </div>
         </div>
+        {/* Body */}
         <div style={{padding:"20px",flex:1,overflowY:"auto"}}>{children}</div>
       </div>
     </div>
@@ -1047,7 +1054,7 @@ const VentasTab = ({ data }) => {
               <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
                 Apertura por SKU — {panelDetail.skuBreakdown.length} productos
               </div>
-              <div style={{overflowX:"auto",maxHeight:400,overflowY:"auto"}}>
+              <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse"}}>
                   <thead style={{background:"#1f2937",position:"sticky",top:0}}>
                     <tr><Th ch="Producto / SKU"/><Th ch="Venta Neta" right/><Th ch="Contribución" right/><Th ch="Margen %" right/></tr>
@@ -1277,7 +1284,7 @@ const GuiasTab = ({ data }) => {
               </button>
             </div>
             <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
-              <div style={{overflowX:"auto",maxHeight:480,overflowY:"auto"}}>
+              <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse"}}>
                   <thead style={{background:"#1f2937",position:"sticky",top:0}}>
                     <tr>
@@ -1487,7 +1494,7 @@ const ComprasTab = ({ data }) => {
                 color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
                 Evolución de precios por producto — {panelProductGroups.length}
               </div>
-              <div style={{overflowX:"auto",maxHeight:480,overflowY:"auto"}}>
+              <div style={{overflowX:"auto",overflowY:"visible"}}>
                 <table style={{width:"100%",borderCollapse:"collapse"}}>
                   <thead style={{background:"#1f2937",position:"sticky",top:0}}>
                     <tr>
@@ -2241,7 +2248,7 @@ const ProductosTab = ({ data }) => {
                 color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
                 Clientes — {panelDetail.clientBreakdown.length}
               </div>
-              <div style={{overflowX:"auto",maxHeight:400,overflowY:"auto"}}>
+              <div style={{overflowX:"auto",overflowY:"visible"}}>
                 <table style={{width:"100%",borderCollapse:"collapse"}}>
                   <thead style={{background:"#1f2937",position:"sticky",top:0}}>
                     <tr>
