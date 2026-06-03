@@ -53,6 +53,114 @@ import * as XLSX from "xlsx";
 import { Search, TrendingUp, ShoppingCart, Package, ChevronLeft, ChevronRight, Upload, BarChart2, X, Award, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown, ArrowUpDown, Download, Eye, Loader2, Info, DollarSign, CheckCircle, Tag, Trash2, FileText } from "lucide-react";
 
 // ═══════════════════════════════════════════════
+//  WEB CRYPTO — encriptación AES-GCM + PBKDF2
+// ═══════════════════════════════════════════════
+
+const GpCrypto = (() => {
+  const META_KEY = 'gp_meta_v1';
+  const MOD_KEY  = n => `gp_enc_${n}`;
+
+  const b64enc = ab => btoa(String.fromCharCode(...new Uint8Array(ab)));
+  const b64dec = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+  // Derivar clave AES-GCM desde PIN + salt usando PBKDF2
+  async function derivePinKey(pin, salt) {
+    const km = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveKey']
+    );
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' },
+      km, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
+  }
+
+  // Cifrar bytes con clave AES-GCM (devuelve base64: iv + ciphertext)
+  async function encBytes(data, key) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
+    const out = new Uint8Array(12 + ct.byteLength);
+    out.set(iv); out.set(new Uint8Array(ct), 12);
+    return b64enc(out.buffer);
+  }
+
+  // Descifrar bytes
+  async function decBytes(b64, key) {
+    const d = b64dec(b64);
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: d.slice(0,12) }, key, d.slice(12));
+  }
+
+  // Cifrar/descifrar JSON
+  async function encJSON(data, key) {
+    return encBytes(new TextEncoder().encode(JSON.stringify(data)), key);
+  }
+  async function decJSON(b64, key) {
+    return JSON.parse(new TextDecoder().decode(await decBytes(b64, key)));
+  }
+
+  return {
+    isSetupDone() { return !!localStorage.getItem(META_KEY); },
+
+    // Primera configuración: genera master key y la cifra con ambos PINs
+    async setup(adminPin, userPin) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const mk   = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']
+      );
+      const mkRaw = await crypto.subtle.exportKey('raw', mk);
+      const [aKey, uKey] = await Promise.all([
+        derivePinKey(adminPin, salt),
+        derivePinKey(userPin,  salt),
+      ]);
+      const [aMK, uMK] = await Promise.all([
+        encBytes(mkRaw, aKey),
+        encBytes(mkRaw, uKey),
+      ]);
+      localStorage.setItem(META_KEY, JSON.stringify({
+        salt: b64enc(salt.buffer), aMK, uMK,
+      }));
+      return { masterKey: mk, level: 'admin' };
+    },
+
+    // Login: intenta admin primero, luego usuario. Devuelve null si PIN incorrecto.
+    async login(pin) {
+      const meta = JSON.parse(localStorage.getItem(META_KEY) || 'null');
+      if (!meta) return null;
+      const salt   = b64dec(meta.salt);
+      const pinKey = await derivePinKey(pin, salt);
+      for (const [encMK, level] of [[meta.aMK,'admin'],[meta.uMK,'user']]) {
+        try {
+          const mkRaw    = await decBytes(encMK, pinKey);
+          const masterKey = await crypto.subtle.importKey(
+            'raw', mkRaw, { name: 'AES-GCM' }, true, ['encrypt','decrypt']
+          );
+          return { masterKey, level };
+        } catch(e) { /* prueba el siguiente */ }
+      }
+      return null;
+    },
+
+    // Guardar/cargar módulo encriptado
+    async saveModule(name, data, masterKey) {
+      try { localStorage.setItem(MOD_KEY(name), await encJSON(data, masterKey)); }
+      catch(e) { console.warn('gp save error:', e); }
+    },
+    async loadModule(name, masterKey) {
+      const b64 = localStorage.getItem(MOD_KEY(name));
+      if (!b64) return null;
+      try { return await decJSON(b64, masterKey); } catch(e) { return null; }
+    },
+
+    // Borrar todo (meta + módulos)
+    clearAll() {
+      [META_KEY, MOD_KEY('ventas'), MOD_KEY('guias'), MOD_KEY('compras'),
+       'gp_dashboard_v2' /* legacy */].forEach(k => {
+        try { localStorage.removeItem(k); } catch(e) {}
+      });
+    },
+  };
+})();
+
+// ═══════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════
 
@@ -246,14 +354,21 @@ const usePag = (data, size = 50) => {
 //  UI ATOMS
 // ═══════════════════════════════════════════════
 
-const Card = ({ label, value, sub, color = "text-white", icon }) => (
+const Card = ({ label, value, sub, color = "text-white", icon, delta }) => (
   <div className="card-hover bg-gray-800 border border-gray-700 rounded-xl p-4">
     <div className="flex items-center justify-between mb-2">
       <span className="text-xs font-medium text-gray-500 uppercase tracking-widest">{label}</span>
       {icon && <span className="text-gray-600">{icon}</span>}
     </div>
     <div className={`text-2xl font-bold tabular-nums leading-none ${color}`}>{value}</div>
-    {sub && <div className="text-xs text-gray-500 mt-1.5 leading-snug">{sub}</div>}
+    <div className="flex items-center justify-between mt-1.5">
+      {sub && <div className="text-xs text-gray-500 leading-snug flex-1">{sub}</div>}
+      {delta != null && isFinite(delta) && (
+        <span className={`text-xs font-semibold tabular-nums pl-2 shrink-0 ${delta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+          {delta >= 0 ? '↑' : '↓'}{Math.abs(delta).toFixed(1)}%
+        </span>
+      )}
+    </div>
   </div>
 );
 
@@ -559,6 +674,195 @@ const GestapackLogo = ({ height = 48 }) => {
 };
 
 
+
+// ═══════════════════════════════════════════════
+//  PANTALLA DE LOGIN
+// ═══════════════════════════════════════════════
+
+const LoginScreen = ({ onLogin }) => {
+  const [pin,     setPin]     = useState('');
+  const [error,   setError]   = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    if (pin.length < 4) { setError('El PIN debe tener al menos 4 dígitos'); return; }
+    setLoading(true); setError('');
+    try {
+      const result = await GpCrypto.login(pin);
+      if (result) { onLogin(result); }
+      else { setError('PIN incorrecto'); setPin(''); }
+    } catch(e) { setError('Error al verificar'); }
+    setLoading(false);
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-6"
+      style={{ background: '#0A0A0F', position: 'relative' }}>
+      <LogoBg />
+      <div style={{ position:'relative', zIndex:1, width:'100%', maxWidth:380 }}>
+        <div className="flex flex-col items-center mb-8">
+          <GestapackLogo height={44}/>
+          <p className="text-xs tracking-widest uppercase mt-4" style={{color:'#5a4010'}}>
+            Dashboard Comercial
+          </p>
+        </div>
+        <div className="rounded-2xl p-7 space-y-5"
+          style={{ background:'#0F0F16', border:'1px solid #1a1a28' }}>
+          <div className="text-center space-y-1">
+            <h2 className="text-base font-bold text-white">Ingresar al Dashboard</h2>
+            <p className="text-xs" style={{color:'#444458'}}>Introduce tu PIN de acceso</p>
+          </div>
+          <input
+            type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6}
+            value={pin}
+            onChange={e => { setPin(e.target.value.replace(/\D/g,'')); setError(''); }}
+            onKeyDown={e => e.key === 'Enter' && submit()}
+            placeholder="••••"
+            autoFocus
+            className="w-full text-center text-2xl rounded-xl py-3 font-bold"
+            style={{
+              background:'#161622',
+              border: error ? '1px solid rgba(239,68,68,0.5)' : '1px solid #21212E',
+              color:'#c88d31', outline:'none', letterSpacing:'0.4em',
+            }}
+            onFocus={e  => { e.target.style.borderColor = '#c88d31'; }}
+            onBlur={e   => { e.target.style.borderColor = error ? 'rgba(239,68,68,0.5)' : '#21212E'; }}
+          />
+          {error && <p className="text-xs text-center" style={{color:'#F87171'}}>{error}</p>}
+          <button onClick={submit} disabled={loading || pin.length < 4}
+            className="w-full py-3 rounded-xl font-semibold text-sm transition-all"
+            style={{
+              background: (loading||pin.length<4) ? 'rgba(200,141,49,0.07)' : 'rgba(200,141,49,0.18)',
+              color:      (loading||pin.length<4) ? '#4a3008'               : '#c88d31',
+              border:     '1px solid rgba(200,141,49,0.3)',
+            }}>
+            {loading
+              ? <span className="flex items-center justify-center gap-2"><Loader2 size={14} className="animate-spin"/>Verificando…</span>
+              : 'Ingresar'}
+          </button>
+        </div>
+        <p className="text-center text-xs mt-5" style={{color:'#1e1e2e'}}>
+          Gestapack · Dashboard Comercial
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// Campo PIN reutilizable — debe estar FUERA de cualquier componente
+// para que React no lo desmonte/monte en cada re-render
+const PinFieldInput = ({ value, onChange, label, onClearError }) => (
+  <div className="space-y-1">
+    <p className="text-xs font-medium" style={{color:'#9CA3AF'}}>{label}</p>
+    <input
+      type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6}
+      value={value}
+      onChange={e => { onChange(e.target.value.replace(/\D/g,'')); onClearError?.(); }}
+      className="w-full text-center text-xl rounded-xl py-2.5 font-bold"
+      style={{ background:'#161622', border:'1px solid #21212E', color:'#c88d31', outline:'none', letterSpacing:'0.3em' }}
+      onFocus={e => e.target.style.borderColor='#c88d31'}
+      onBlur={e  => e.target.style.borderColor='#21212E'}
+    />
+  </div>
+);
+
+// ═══════════════════════════════════════════════
+//  PANTALLA DE CONFIGURACIÓN INICIAL
+// ═══════════════════════════════════════════════
+
+const SetupScreen = ({ onSetup }) => {
+  const [adminPin,  setAdminPin]  = useState('');
+  const [adminPin2, setAdminPin2] = useState('');
+  const [userPin,   setUserPin]   = useState('');
+  const [userPin2,  setUserPin2]  = useState('');
+  const [error,     setError]     = useState('');
+  const [loading,   setLoading]   = useState(false);
+
+  const submit = async () => {
+    if (adminPin.length < 4)       { setError('PIN admin: mínimo 4 dígitos'); return; }
+    if (adminPin !== adminPin2)     { setError('Los PINs admin no coinciden'); return; }
+    if (userPin.length < 4)        { setError('PIN usuario: mínimo 4 dígitos'); return; }
+    if (userPin !== userPin2)      { setError('Los PINs de usuario no coinciden'); return; }
+    if (adminPin === userPin)      { setError('Los PINs deben ser distintos'); return; }
+    setLoading(true);
+    try { onSetup(await GpCrypto.setup(adminPin, userPin)); }
+    catch(e) { setError('Error al configurar'); setLoading(false); }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-6"
+      style={{ background:'#0A0A0F', position:'relative' }}>
+      <LogoBg/>
+      <div style={{ position:'relative', zIndex:1, width:'100%', maxWidth:440 }}>
+        <div className="flex flex-col items-center mb-8">
+          <GestapackLogo height={40}/>
+          <p className="text-xs tracking-widest uppercase mt-4" style={{color:'#5a4010'}}>
+            Primera Configuración
+          </p>
+        </div>
+        <div className="rounded-2xl p-7 space-y-5"
+          style={{ background:'#0F0F16', border:'1px solid #1a1a28' }}>
+          <div>
+            <h2 className="text-base font-bold text-white">Configurar acceso al Dashboard</h2>
+            <p className="text-xs mt-1 leading-relaxed" style={{color:'#555570'}}>
+              Define dos PINs numéricos (4–6 dígitos). Ninguno se guardará en texto plano.
+            </p>
+          </div>
+
+          {/* PIN Admin */}
+          <div className="space-y-3 rounded-xl p-4"
+            style={{background:'rgba(200,141,49,0.04)',border:'1px solid rgba(200,141,49,0.15)'}}>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider" style={{color:'#c88d31'}}>PIN Administrador</span>
+              <span className="text-xs px-2 py-0.5 rounded-full"
+                style={{background:'rgba(200,141,49,0.1)',color:'#c88d31',border:'1px solid rgba(200,141,49,0.2)'}}>
+                Acceso completo
+              </span>
+            </div>
+            <p className="text-xs" style={{color:'#444458'}}>Puede cargar y reemplazar datos. Solo para dueños.</p>
+            <PinFieldInput value={adminPin}  onChange={setAdminPin}  label="PIN"          onClearError={() => setError('')}/>
+            <PinFieldInput value={adminPin2} onChange={setAdminPin2} label="Confirmar PIN" onClearError={() => setError('')}/>
+          </div>
+
+          {/* PIN Usuario */}
+          <div className="space-y-3 rounded-xl p-4"
+            style={{background:'rgba(59,130,246,0.04)',border:'1px solid rgba(59,130,246,0.15)'}}>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider" style={{color:'#93C5FD'}}>PIN Usuario</span>
+              <span className="text-xs px-2 py-0.5 rounded-full"
+                style={{background:'rgba(59,130,246,0.1)',color:'#93C5FD',border:'1px solid rgba(59,130,246,0.2)'}}>
+                Solo lectura
+              </span>
+            </div>
+            <p className="text-xs" style={{color:'#444458'}}>Ve todos los datos. Para la jefa de compras u otros usuarios.</p>
+            <PinFieldInput value={userPin}  onChange={setUserPin}  label="PIN"          onClearError={() => setError('')}/>
+            <PinFieldInput value={userPin2} onChange={setUserPin2} label="Confirmar PIN" onClearError={() => setError('')}/>
+          </div>
+
+          {error && (
+            <p className="text-xs text-center rounded-lg px-3 py-2"
+              style={{color:'#F87171',background:'rgba(239,68,68,0.08)',border:'1px solid rgba(239,68,68,0.2)'}}>
+              {error}
+            </p>
+          )}
+
+          <button onClick={submit}
+            disabled={loading||!adminPin||!adminPin2||!userPin||!userPin2}
+            className="w-full py-3 rounded-xl font-semibold text-sm transition-all"
+            style={{
+              background: loading ? 'rgba(200,141,49,0.07)' : 'rgba(200,141,49,0.18)',
+              color:      loading ? '#4a3008'               : '#c88d31',
+              border:     '1px solid rgba(200,141,49,0.3)',
+            }}>
+            {loading
+              ? <span className="flex items-center justify-center gap-2"><Loader2 size={14} className="animate-spin"/>Configurando…</span>
+              : 'Configurar acceso'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ── Fondo marca de agua (logo centrado, baja opacidad) ──────────────────────
 const LogoBg = () => (
@@ -920,14 +1224,23 @@ const VentasTab = ({ data }) => {
   const globals = useMemo(() => {
     const f   = (a, b) => rows.filter((r) => inR(r.fecha, a, b));
     const r90 = f(P.roll90Start, P.today);
+    const curr30 = calcP(f(P.roll30Start, P.today));
+    // Previous 30-day window (days 31-60 ago)
+    const prev30End   = new Date(refDate.getTime() - 30 * 86400000);
+    const prev30Start = new Date(refDate.getTime() - 59 * 86400000);
+    const prev30  = calcP(f(s0(prev30Start), e23(prev30End)));
+    const delta30V = prev30.venta > 0 ? ((curr30.venta - prev30.venta) / prev30.venta) * 100 : null;
+    const delta30M = prev30.venta > 0 ? curr30.margen - prev30.margen : null;
     return {
       week:    calcP(f(P.weekStart,  P.weekEnd)),
       month:   calcP(f(P.monthStart, P.monthEnd)),
-      roll30:  calcP(f(P.roll30Start, P.today)),
+      roll30:  curr30,
       quarter: calcP(f(P.qStart,     P.qEnd)),
       roll90:  { ...calcP(r90), skus: new Set(r90.map((r) => r.producto).filter(Boolean)).size },
+      delta30V,
+      delta30M,
     };
-  }, [rows, P]);
+  }, [rows, P, refDate]);
 
   const summaries = useMemo(() => {
     return Object.entries(clientMap).map(([cliente, c]) => {
@@ -990,6 +1303,8 @@ const VentasTab = ({ data }) => {
     [filtered, mainSort.key, mainSort.dir, mainAccessor]
   );
 
+  const totalVentaGlobal = useMemo(() => summaries.reduce((s,c) => s + c.totalV, 0), [summaries]);
+
   const panelDetail = useMemo(() => {
     if (!panelClient) return null;
     const skuMap = {}, byWeek = {};
@@ -1023,6 +1338,25 @@ const VentasTab = ({ data }) => {
   };
   const STHtop  = (props) => <SortTh {...props} currentKey={topSort.key}  dir={topSort.dir}  onSort={topSort.toggle}  />;
   const STHmain = (props) => <SortTh {...props} currentKey={mainSort.key} dir={mainSort.dir} onSort={mainSort.toggle} />;
+
+  const handleExportVentas = useCallback(() => {
+    const wsData = sortedFiltered.map(c => ({
+      'Cliente': c.cliente,
+      'SKUs': c.skus,
+      'Venta Trim. Cal.': c.quarter.venta,
+      'Contrib. Trim. Cal.': c.quarter.contrib,
+      'Margen % Trim.': +(c.quarter.venta > 0 ? (c.quarter.contrib/c.quarter.venta*100) : 0).toFixed(1),
+      'Venta 30 Días': c.roll30.venta,
+      'Contrib. 30 Días': c.roll30.contrib,
+      'Venta Total': c.totalV,
+      'Contrib. Total': c.totalC,
+      'Margen % Total': +(c.totalV > 0 ? (c.totalC/c.totalV*100) : 0).toFixed(1),
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, 'Ventas por Cliente');
+    XLSX.writeFile(wb, `ventas_clientes_${fmtDate(refDate)}.xlsx`);
+  }, [sortedFiltered, refDate]);
 
   return (
     <div className="space-y-5">
@@ -1080,7 +1414,7 @@ const VentasTab = ({ data }) => {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        <Card label="Venta Trim. Cal."    value={"$" + fmtM(globals.quarter.venta)}   sub={rows.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300" />
+        <Card label="Venta Trim. Cal."    value={"$" + fmtM(globals.quarter.venta)}   sub={rows.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300" delta={globals.delta30V} />
         <Card label="Contrib. Trim. Cal." value={"$" + fmtM(globals.quarter.contrib)} sub={"Margen: " + fmtPct(globals.quarter.margen)} color="text-emerald-300" />
         <Card label="Margen % 90 días"    value={fmtPct(globals.roll90.margen)}        sub={"Contrib: $" + fmtM(globals.roll90.contrib)} color="text-yellow-300" />
         <Card label="SKUs únicos 90 días" value={globals.roll90.skus}                  sub="Productos distintos" color="text-pink-300" />
@@ -1127,6 +1461,12 @@ const VentasTab = ({ data }) => {
                   <Td ch={i + 1} bold color={i < 3 ? "text-yellow-400" : "text-gray-600"}/>
                   <td className="px-3 py-2 text-sm text-white max-w-xs">
                     <span className="block truncate font-medium">{c.cliente}</span>
+                    {(() => {
+                      const pct = totalVentaGlobal > 0 ? (c.totalV / totalVentaGlobal) * 100 : 0;
+                      if (pct >= 40) return <span style={{marginLeft:6,fontSize:9,padding:"1px 5px",borderRadius:99,background:"rgba(239,68,68,0.15)",color:"#F87171",border:"1px solid rgba(239,68,68,0.3)",whiteSpace:"nowrap",verticalAlign:"middle"}}>⚠ {fmt(pct,1)}%</span>;
+                      if (pct >= 25) return <span style={{marginLeft:6,fontSize:9,padding:"1px 5px",borderRadius:99,background:"rgba(245,158,11,0.15)",color:"#FBBF24",border:"1px solid rgba(245,158,11,0.3)",whiteSpace:"nowrap",verticalAlign:"middle"}}>▲ {fmt(pct,1)}%</span>;
+                      return null;
+                    })()}
                   </td>
                   <Td ch={"$" + fmtM(showTop === "venta" ? c.totalV : c.totalC)} right bold/>
                   <Td ch={fmtPct(c.totalV > 0 ? (c.totalC / c.totalV) * 100 : 0)} right color="text-emerald-400"/>
@@ -1153,6 +1493,11 @@ const VentasTab = ({ data }) => {
             >{l}</button>
           ))}
         </div>
+        <button onClick={handleExportVentas}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all shrink-0"
+          style={{background:"rgba(16,185,129,0.12)",color:"#34D399",border:"1px solid rgba(16,185,129,0.25)"}}>
+          <Download size={13}/> Exportar
+        </button>
       </div>
 
       {/* Main table — all clients, clickable */}
@@ -1387,7 +1732,99 @@ const SvgSparkline = ({ history }) => {
   );
 };
 
-const ComprasTab = ({ data }) => {
+// ═══════════════════════════════════════════════
+//  CRUCE COMPRAS ↔ VENTAS
+// ═══════════════════════════════════════════════
+
+const CruceTable = ({ comprasRows, ventasData }) => {
+  const data = useMemo(() => {
+    // Build ventas map: normStr(producto) → {venta, contrib}
+    const ventasMap = {};
+    ventasData.forEach(r => {
+      const prod = normStr(col(r, "Producto"));
+      if (!prod) return;
+      if (!ventasMap[prod]) ventasMap[prod] = { venta: 0, contrib: 0 };
+      ventasMap[prod].venta   += parseNum(col(r, "Total Línea", "Total Linea", "Total"));
+      ventasMap[prod].contrib += parseNum(col(r, "Margen Contrib $"));
+    });
+
+    // Build compras map: proveedor → Set of normalized products
+    // comprasRows ya está procesado: usa r.proveedor y r.producto (no col())
+    const provMap = {};
+    comprasRows.forEach(r => {
+      const prov = r.proveedor;
+      const prod = normStr(r.producto || '');
+      if (!prov || !prod) return;
+      if (!provMap[prov]) provMap[prov] = new Set();
+      provMap[prov].add(prod);
+    });
+
+    // For each proveedor, sum ventas data of their products
+    return Object.entries(provMap).map(([prov, prods]) => {
+      let ventaTotal = 0, contribTotal = 0, matched = 0;
+      prods.forEach(prod => {
+        // 1) Exact normalized match
+        let v = ventasMap[prod];
+        if (!v) {
+          // 2) Ventas product is contained in compras product (ej: "filete" ⊂ "filete vacuno vacio")
+          // 3) First 2 significant words match (ej: "lomo liso" == "lomo liso nac")
+          const prodWords2 = prod.split(' ').filter(w => w.length > 2).slice(0, 2).join(' ');
+          const key = Object.keys(ventasMap).find(k => {
+            if (!k) return false;
+            if (prod.startsWith(k) || k.startsWith(prod)) return true;
+            const kWords2 = k.split(' ').filter(w => w.length > 2).slice(0, 2).join(' ');
+            return kWords2 && prodWords2 && kWords2 === prodWords2;
+          });
+          if (key) v = ventasMap[key];
+        }
+        if (v) { ventaTotal += v.venta; contribTotal += v.contrib; matched++; }
+      });
+      const margen = ventaTotal > 0 ? (contribTotal / ventaTotal) * 100 : 0;
+      return { prov, ventaTotal, contribTotal, margen, matched, total: prods.size };
+    }).filter(r => r.ventaTotal > 0).sort((a, b) => b.ventaTotal - a.ventaTotal);
+  }, [comprasRows, ventasData]);
+
+  if (!data.length) return (
+    <div className="px-4 py-8 text-center text-sm" style={{color:"#444458"}}>
+      No se encontraron productos coincidentes entre compras y ventas
+    </div>
+  );
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="bg-gray-800/60">
+          <tr>
+            <Th ch="Proveedor"/>
+            <Th ch="Venta de sus productos" right/>
+            <Th ch="Contribución generada" right/>
+            <Th ch="Margen %" right/>
+            <Th ch="Productos cruzados" right/>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-800/60">
+          {data.map((r, i) => (
+            <tr key={r.prov} className="hover:bg-emerald-900/10 transition-colors">
+              <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[220px]">
+                <span className="block truncate">{r.prov}</span>
+              </td>
+              <Td ch={"$" + fmtM(r.ventaTotal)} right bold/>
+              <Td ch={"$" + fmtM(r.contribTotal)} right color="text-emerald-400"/>
+              <Td ch={fmtPct(r.margen)} right
+                color={r.margen > 15 ? "text-emerald-300" : r.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+              <td className="px-3 py-2.5 text-sm text-right">
+                <span style={{color:"#555570"}}>{r.matched}</span>
+                <span style={{color:"#333345"}}> / {r.total} SKUs</span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+const ComprasTab = ({ data, ventasData = [] }) => {
   const [search,        setSearch]        = useState("");
   const [panelSupplier, setPanelSupplier] = useState(null);
   const [modalFolio,    setModalFolio]    = useState(null);
@@ -1470,6 +1907,23 @@ const ComprasTab = ({ data }) => {
     totalC:           rows.reduce((s, r) => s + r.total, 0),
   }), [supplierSummary, rows]);
 
+  const totalComprasGlobal = useMemo(() => supplierSummary.reduce((s,r) => s + r.totalC, 0), [supplierSummary]);
+
+  const handleExportCompras = useCallback(() => {
+    const wsData = sortedSuppliers.map(s => ({
+      'Proveedor': s.proveedor,
+      'Líneas': s.rows.length,
+      'Productos Distintos': s.prods,
+      'Total Comprado ($)': s.totalC,
+      'Última Compra': s.lastFecha ? fmtDate(s.lastFecha) : '',
+      'Días desde Última Compra': s.lastFecha ? Math.floor((Date.now() - s.lastFecha.getTime()) / 86400000) : '',
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, 'Compras por Proveedor');
+    XLSX.writeFile(wb, `compras_proveedores.xlsx`);
+  }, [sortedSuppliers]);
+
   const STH = (props) => <SortTh {...props} currentKey={compSort.key} dir={compSort.dir} onSort={compSort.toggle}/>;
   const daysSince = (d) => !d ? null : Math.floor((Date.now() - d.getTime()) / 86400000);
 
@@ -1539,6 +1993,11 @@ const ComprasTab = ({ data }) => {
       <div className="flex items-center gap-3">
         <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar por proveedor o producto…"/>
         <span className="text-xs text-gray-500 shrink-0 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2">Búsqueda dual</span>
+        <button onClick={handleExportCompras}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all shrink-0"
+          style={{background:"rgba(16,185,129,0.12)",color:"#34D399",border:"1px solid rgba(16,185,129,0.25)"}}>
+          <Download size={13}/> Exportar
+        </button>
       </div>
 
       {/* Supplier summary table */}
@@ -1565,6 +2024,12 @@ const ComprasTab = ({ data }) => {
                   className="hover:bg-purple-900/20 transition-colors">
                   <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[220px]">
                     <span className="block truncate" title={s.proveedor}>{s.proveedor}</span>
+                    {(() => {
+                      const pct = totalComprasGlobal > 0 ? (s.totalC / totalComprasGlobal) * 100 : 0;
+                      if (pct >= 40) return <span style={{marginLeft:6,fontSize:9,padding:"1px 5px",borderRadius:99,background:"rgba(239,68,68,0.15)",color:"#F87171",border:"1px solid rgba(239,68,68,0.3)",whiteSpace:"nowrap",verticalAlign:"middle"}}>⚠ {fmt(pct,1)}%</span>;
+                      if (pct >= 25) return <span style={{marginLeft:6,fontSize:9,padding:"1px 5px",borderRadius:99,background:"rgba(245,158,11,0.15)",color:"#FBBF24",border:"1px solid rgba(245,158,11,0.3)",whiteSpace:"nowrap",verticalAlign:"middle"}}>▲ {fmt(pct,1)}%</span>;
+                      return null;
+                    })()}
                   </td>
                   <Td ch={s.rows.length.toLocaleString("es-CL")} right dim/>
                   <Td ch={s.prods}                                right dim/>
@@ -1591,6 +2056,18 @@ const ComprasTab = ({ data }) => {
         </div>
         <Pager page={page} totalPages={totalPages} go={go} total={total}/>
       </div>
+
+      {/* ── Cruce: impacto de proveedores en margen de ventas ── */}
+      {ventasData.length > 0 && rows.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+            <TrendingUp size={15} className="text-emerald-400" />
+            <span className="font-semibold text-white text-sm">Impacto de proveedores en margen de ventas</span>
+            <span className="text-xs text-gray-600 ml-1">— cruce compras ↔ ventas por producto</span>
+          </div>
+          <CruceTable comprasRows={rows} ventasData={ventasData} />
+        </div>
+      )}
     </div>
   );
 };
@@ -2147,11 +2624,22 @@ const ProductosTab = ({ data }) => {
       if (r.cliente) map[k].clientes.add(r.cliente);
       map[k].rows.push(r);
     });
-    return Object.values(map).map((p) => ({
-      ...p, clientes: p.clientes.size,
-      margen: p.venta > 0 ? (p.contrib / p.venta) * 100 : 0,
-    }));
-  }, [filteredRows]);
+    return Object.values(map).map((p) => {
+      const margen = p.venta > 0 ? (p.contrib / p.venta) * 100 : 0;
+      // Delta 30d: last 30d vs previous 30d within filtered range
+      const prodRows = filteredRows.filter(r => r.producto === p.producto);
+      const curr30End = dateTo ? new Date(dateTo + "T23:59:59") : new Date();
+      const curr30Start = new Date(curr30End.getTime() - 29 * 86400000);
+      const prev30End2 = new Date(curr30End.getTime() - 30 * 86400000);
+      const prev30Start2 = new Date(curr30End.getTime() - 59 * 86400000);
+      const curr30V = prodRows.filter(r => r.fecha >= curr30Start && r.fecha <= curr30End).reduce((s,r) => s + r.venta, 0);
+      const prev30V = prodRows.filter(r => r.fecha >= prev30Start2 && r.fecha <= prev30End2).reduce((s,r) => s + r.venta, 0);
+      const delta30 = prev30V > 0 ? ((curr30V - prev30V) / prev30V) * 100 : null;
+      return {
+        ...p, clientes: p.clientes.size, margen, delta30,
+      };
+    });
+  }, [filteredRows, dateTo]);
 
   const globalStats = useMemo(() => ({
     totalProductos: productSummary.length,
@@ -2169,6 +2657,7 @@ const ProductosTab = ({ data }) => {
   const sortedProducts = useMemo(() =>
     applySort(filteredProducts, prodSort.key, prodSort.dir, (p, k) => {
       if (k === "producto") return p.producto.toLowerCase();
+      if (k === "delta30") return p.delta30 ?? -999;
       return p[k] ?? 0;
     }),
   [filteredProducts, prodSort.key, prodSort.dir]);
@@ -2334,6 +2823,7 @@ const ProductosTab = ({ data }) => {
                 <STH label="Margen %"     sk="margen"   right/>
                 <STH label="Cantidad"     sk="cantidad" right/>
                 <STH label="Clientes"     sk="clientes" right/>
+                <STH label="Tendencia"    sk="delta30"  right/>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/60">
@@ -2348,6 +2838,18 @@ const ProductosTab = ({ data }) => {
                   <Td ch={fmtPct(p.margen)} right color={p.margen > 15 ? "text-emerald-300" : p.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
                   <Td ch={fmt(p.cantidad, 2)} right dim/>
                   <Td ch={p.clientes} right dim/>
+                  <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
+                    {p.delta30 != null && isFinite(p.delta30)
+                      ? <span style={{
+                          fontSize: 11, padding: "2px 7px", borderRadius: 99, fontWeight: 700,
+                          background: p.delta30 >= 0 ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)",
+                          color: p.delta30 >= 0 ? "#34D399" : "#F87171",
+                          border: `1px solid ${p.delta30 >= 0 ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`
+                        }}>
+                          {p.delta30 >= 0 ? "↑" : "↓"}{Math.abs(p.delta30).toFixed(0)}%
+                        </span>
+                      : <span style={{color:"#333345",fontSize:11}}>—</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -2359,6 +2861,550 @@ const ProductosTab = ({ data }) => {
   );
 };
 
+// ═══════════════════════════════════════════════
+//  TAB 0 — RESUMEN EJECUTIVO
+// ═══════════════════════════════════════════════
+
+const ResumenTab = ({ ventasData, guiasData, comprasData }) => {
+  // Parse ventas rows
+  const ventasRows = useMemo(() =>
+    ventasData.map((r) => ({
+      cliente:  col(r, "Razón Social", "Razon Social"),
+      fecha:    parseDate(col(r, "Fecha")),
+      producto: col(r, "Producto"),
+      venta:    parseNum(col(r, "Total Línea", "Total Linea", "Total")),
+      contrib:  parseNum(col(r, "Margen Contrib $")),
+    })).filter((r) => r.fecha && r.cliente),
+  [ventasData]);
+
+  // Parse compras rows
+  const comprasRows = useMemo(() =>
+    comprasData.map((r) => ({
+      proveedor: col(r, "Razón Social", "Razon Social"),
+      fecha:     parseDate(col(r, "Fecha")),
+      total:     parseNum(col(r, "Total Línea", "Total Linea")),
+    })).filter((r) => r.proveedor),
+  [comprasData]);
+
+  const refDate = useMemo(() => {
+    if (!ventasRows.length) return new Date();
+    let max = -Infinity;
+    ventasRows.forEach((r) => { const t = r.fecha.getTime(); if (t > max) max = t; });
+    return new Date(max);
+  }, [ventasRows]);
+
+  const P = useMemo(() => getPeriods(refDate), [refDate]);
+
+  const prev30End   = useMemo(() => new Date(refDate.getTime() - 30 * 86400000), [refDate]);
+  const prev30Start = useMemo(() => new Date(refDate.getTime() - 59 * 86400000), [refDate]);
+
+  const roll30    = useMemo(() => calcP(ventasRows.filter(r => inR(r.fecha, P.roll30Start, P.today))),  [ventasRows, P]);
+  const prev30    = useMemo(() => calcP(ventasRows.filter(r => inR(r.fecha, s0(prev30Start), e23(prev30End)))), [ventasRows, prev30Start, prev30End]);
+  const quarter   = useMemo(() => calcP(ventasRows.filter(r => inR(r.fecha, P.qStart, P.qEnd))),       [ventasRows, P]);
+
+  const delta30V  = prev30.venta > 0 ? ((roll30.venta - prev30.venta) / prev30.venta) * 100 : null;
+  const delta30M  = prev30.venta > 0 ? roll30.margen - prev30.margen : null;
+
+  const activeClients30 = useMemo(() => {
+    const s = new Set();
+    ventasRows.filter(r => inR(r.fecha, P.roll30Start, P.today)).forEach(r => s.add(r.cliente));
+    return s.size;
+  }, [ventasRows, P]);
+
+  const totalCompras    = comprasRows.reduce((s, r) => s + r.total, 0);
+  const totalProveedores = new Set(comprasRows.map(r => r.proveedor)).size;
+
+  // Client summaries for Top 5 and alerts
+  const clientMap = useMemo(() => {
+    const m = {};
+    ventasRows.forEach((r) => {
+      if (!m[r.cliente]) m[r.cliente] = [];
+      m[r.cliente].push(r);
+    });
+    return m;
+  }, [ventasRows]);
+
+  const summaries = useMemo(() => {
+    return Object.entries(clientMap).map(([cliente, rows]) => {
+      const f = (a, b) => rows.filter(r => inR(r.fecha, a, b));
+      const totalV   = rows.reduce((s, r) => s + r.venta, 0);
+      const r30      = calcP(f(P.roll30Start, P.today));
+      const p30      = calcP(f(s0(prev30Start), e23(prev30End)));
+      const trimestre = calcP(f(P.qStart, P.qEnd));
+      return { cliente, totalV, roll30: r30, prev30: p30, quarter: trimestre };
+    }).sort((a, b) => b.totalV - a.totalV);
+  }, [clientMap, P, prev30Start, prev30End]);
+
+  const totalVentaGlobal = summaries.reduce((s, c) => s + c.totalV, 0);
+  const top5 = summaries.slice(0, 5);
+
+  // Supplier recency map
+  const supplierMap = useMemo(() => {
+    const m = {};
+    comprasRows.forEach(r => {
+      if (!m[r.proveedor]) m[r.proveedor] = { lastFecha: null, totalC: 0 };
+      m[r.proveedor].totalC += r.total;
+      if (!m[r.proveedor].lastFecha || (r.fecha && r.fecha > m[r.proveedor].lastFecha))
+        m[r.proveedor].lastFecha = r.fecha;
+    });
+    return m;
+  }, [comprasRows]);
+
+  const top4Suppliers = useMemo(() =>
+    Object.entries(supplierMap)
+      .map(([prov, v]) => ({ prov, ...v }))
+      .sort((a, b) => b.totalC - a.totalC)
+      .slice(0, 4),
+  [supplierMap]);
+
+  // Alerts
+  const alerts = useMemo(() => {
+    const list = [];
+    // a) Concentration risk ≥40%
+    summaries.forEach(c => {
+      const pct = totalVentaGlobal > 0 ? (c.totalV / totalVentaGlobal) * 100 : 0;
+      if (pct >= 40) list.push({ type: "red", msg: `${c.cliente} representa el ${fmt(pct,1)}% de la venta total` });
+    });
+    // b) Suppliers without recent purchase >45 days
+    const now = Date.now();
+    Object.entries(supplierMap).forEach(([prov, v]) => {
+      if (v.lastFecha) {
+        const days = Math.floor((now - v.lastFecha.getTime()) / 86400000);
+        if (days > 45) list.push({ type: "amber", msg: `${prov} lleva ${days} días sin compra` });
+      }
+    });
+    // c) Margin drop
+    if (delta30M !== null && delta30M < -2) {
+      list.push({ type: "amber", msg: `Margen cayó ${Math.abs(delta30M).toFixed(1)} ppts en los últimos 30 días` });
+    }
+    return list;
+  }, [summaries, totalVentaGlobal, supplierMap, delta30M]);
+
+  const daysSince = (d) => !d ? null : Math.floor((Date.now() - d.getTime()) / 86400000);
+
+  return (
+    <div className="space-y-5 fade-in">
+      {/* Section 1: KPI row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Card
+          label="Venta 30 Días"
+          value={"$" + fmtM(roll30.venta)}
+          sub={`Clientes: ${activeClients30} activos`}
+          color="text-blue-300"
+          delta={delta30V}
+        />
+        <Card
+          label="Margen 30 Días"
+          value={fmtPct(roll30.margen)}
+          sub={"Contrib: $" + fmtM(roll30.contrib)}
+          color="text-emerald-300"
+          delta={delta30M}
+        />
+        <Card
+          label="Venta Trimestre"
+          value={"$" + fmtM(quarter.venta)}
+          sub={fmtPct(quarter.margen) + " margen"}
+          color="text-yellow-300"
+        />
+        <Card
+          label="Total Compras"
+          value={"$" + fmtM(totalCompras)}
+          sub={`${totalProveedores} proveedores`}
+          color="text-purple-300"
+        />
+      </div>
+
+      {/* Section 2: Top 5 Clientes */}
+      {top5.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+            <Award size={15} className="text-yellow-400" />
+            <span className="font-semibold text-white text-sm">Top 5 Clientes</span>
+            <span className="text-xs text-gray-600 ml-1">— por venta total</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/60">
+                <tr>
+                  <Th ch="Cliente"/>
+                  <Th ch="Venta Trim." right/>
+                  <Th ch="Margen %" right/>
+                  <Th ch="Tendencia" right/>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/60">
+                {top5.map((c, i) => {
+                  const pct = totalVentaGlobal > 0 ? (c.totalV / totalVentaGlobal) * 100 : 0;
+                  const trendDelta = c.prev30.venta > 0
+                    ? ((c.roll30.venta - c.prev30.venta) / c.prev30.venta) * 100
+                    : null;
+                  return (
+                    <tr key={c.cliente} className="hover:bg-blue-900/20 transition-colors">
+                      <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[200px]">
+                        <span className="block truncate">{c.cliente}</span>
+                        {pct >= 40 && <span style={{marginLeft:6,fontSize:9,padding:"1px 5px",borderRadius:99,background:"rgba(239,68,68,0.15)",color:"#F87171",border:"1px solid rgba(239,68,68,0.3)",whiteSpace:"nowrap",verticalAlign:"middle"}}>⚠ {fmt(pct,1)}%</span>}
+                        {pct >= 25 && pct < 40 && <span style={{marginLeft:6,fontSize:9,padding:"1px 5px",borderRadius:99,background:"rgba(245,158,11,0.15)",color:"#FBBF24",border:"1px solid rgba(245,158,11,0.3)",whiteSpace:"nowrap",verticalAlign:"middle"}}>▲ {fmt(pct,1)}%</span>}
+                      </td>
+                      <Td ch={"$" + fmtM(c.quarter.venta)} right bold/>
+                      <Td ch={fmtPct(c.quarter.margen)} right
+                        color={c.quarter.margen > 15 ? "text-emerald-300" : c.quarter.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+                      <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
+                        {trendDelta != null && isFinite(trendDelta)
+                          ? <span style={{
+                              fontSize:11, padding:"2px 7px", borderRadius:99, fontWeight:700,
+                              background: trendDelta >= 0 ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)",
+                              color: trendDelta >= 0 ? "#34D399" : "#F87171",
+                              border: `1px solid ${trendDelta >= 0 ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`
+                            }}>
+                              {trendDelta >= 0 ? "↑" : "↓"}{Math.abs(trendDelta).toFixed(0)}%
+                            </span>
+                          : <span style={{color:"#333345",fontSize:11}}>—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Section 3: Alertas */}
+      {alerts.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold uppercase tracking-widest" style={{color:"#555570"}}>Alertas</p>
+          {alerts.map((a, i) => (
+            <div key={i} className="flex items-start gap-3 px-4 py-3 rounded-xl text-sm"
+              style={{
+                background: a.type === "red" ? "rgba(239,68,68,0.07)" : "rgba(245,158,11,0.07)",
+                borderLeft: `3px solid ${a.type === "red" ? "#EF4444" : "#F59E0B"}`,
+                border: `1px solid ${a.type === "red" ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`,
+                borderLeftWidth: 3,
+              }}>
+              <span style={{color: a.type === "red" ? "#F87171" : "#FBBF24", flexShrink:0}}>
+                {a.type === "red" ? "⚠" : "↓"}
+              </span>
+              <span style={{color: a.type === "red" ? "#FECACA" : "#FDE68A"}}>{a.msg}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Section 4: Actividad reciente proveedores */}
+      {top4Suppliers.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+            <Package size={15} className="text-purple-400" />
+            <span className="font-semibold text-white text-sm">Actividad reciente — Proveedores</span>
+            <span className="text-xs text-gray-600 ml-1">— top 4 por compra total</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/60">
+                <tr>
+                  <Th ch="Proveedor"/>
+                  <Th ch="Total Comprado" right/>
+                  <Th ch="Última Compra" right/>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/60">
+                {top4Suppliers.map((s) => {
+                  const d = daysSince(s.lastFecha);
+                  const color = d === null ? "#6B7280" : d < 30 ? "#10B981" : d < 60 ? "#F59E0B" : "#EF4444";
+                  return (
+                    <tr key={s.prov} className="hover:bg-purple-900/20 transition-colors">
+                      <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[220px]">
+                        <span className="block truncate">{s.prov}</span>
+                      </td>
+                      <Td ch={"$" + fmtM(s.totalC)} right color="text-purple-300" bold/>
+                      <td style={{padding:"8px 12px",textAlign:"right"}}>
+                        {s.lastFecha ? (
+                          <span style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>
+                            <span style={{fontSize:11,color:"#9CA3AF"}}>{fmtDate(s.lastFecha)}</span>
+                            <span style={{background:color+"22",color,border:`1px solid ${color}55`,
+                              borderRadius:99,padding:"1px 7px",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
+                              {d === 0 ? "hoy" : `hace ${d}d`}
+                            </span>
+                          </span>
+                        ) : <span style={{color:"#6B7280"}}>-</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════
+//  TAB 7 — INVENTARIO (Sprint 3)
+// ═══════════════════════════════════════════════
+
+const InventarioTab = ({ guiasData, ventasData }) => {
+  // Use despachos (guías) as primary source, ventas as fallback
+  const sourceData = guiasData.length > 0 ? guiasData : ventasData;
+  const useGuias   = guiasData.length > 0;
+
+  // Parse rows from either source — both share same column names
+  const rows = useMemo(() =>
+    sourceData.map(r => ({
+      producto: col(r, "Producto"),
+      cliente:  col(r, "Razón Social", "Razon Social"),
+      fecha:    parseDate(col(r, "Fecha")),
+      cantidad: parseNum(col(r, "Cantidad")),
+    })).filter(r => r.fecha && r.producto && r.cliente),
+  [sourceData]);
+
+  // Derive date range from actual data
+  const { refDate, totalDays } = useMemo(() => {
+    if (!rows.length) return { refDate: new Date(), totalDays: 90 };
+    let minT = Infinity, maxT = -Infinity;
+    rows.forEach(r => { const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t; });
+    const rDate = new Date(maxT);
+    const days  = Math.max(1, Math.round((maxT - minT) / 86400000));
+    return { refDate: rDate, totalDays: days };
+  }, [rows]);
+  const totalWeeks = totalDays / 7;
+
+  // Core SKU analysis
+  const skuAnalysis = useMemo(() => {
+    if (!rows.length) return [];
+
+    // Group events by product
+    const skuMap = {};
+    rows.forEach(r => {
+      const k = r.producto;
+      if (!skuMap[k]) skuMap[k] = { producto: k, events: [], clientSet: new Set() };
+      skuMap[k].events.push({ fecha: r.fecha, cliente: r.cliente, cantidad: r.cantidad });
+      if (r.cliente) skuMap[k].clientSet.add(r.cliente);
+    });
+
+    return Object.values(skuMap).map(sku => {
+      const events = [...sku.events].sort((a, b) => a.fecha - b.fecha);
+      const uniqueClients = sku.clientSet.size;
+
+      // Average gap between consecutive events (days)
+      let avgGap = null;
+      if (events.length > 1) {
+        const gaps = events.slice(1).map((e, i) => (e.fecha - events[i].fecha) / 86400000);
+        avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+      }
+
+      // Clients who bought in ≥2 different calendar months
+      let consistentClients = 0;
+      sku.clientSet.forEach(c => {
+        const months = new Set(
+          events.filter(e => e.cliente === c)
+                .map(e => `${e.fecha.getFullYear()}-${e.fecha.getMonth()}`)
+        );
+        if (months.size >= 2) consistentClients++;
+      });
+
+      // Weekly demand (total qty / total weeks)
+      const totalQty     = events.reduce((s, e) => s + (e.cantidad || 1), 0);
+      const weeklyDemand = totalWeeks > 0 ? totalQty / totalWeeks : 0;
+
+      // ── Classification rules ───────────────────────────────────────
+      // BASE FIJA:  ≥3 unique clients AND ≥2 consistent clients AND ≥8 events
+      // CALZADO:    ≤1 unique client OR ≤2 events total
+      // HÍBRIDO:    everything in between
+      let tipo;
+      if (uniqueClients >= 3 && consistentClients >= 2 && events.length >= 8) {
+        tipo = 'base';
+      } else if (uniqueClients <= 1 || events.length <= 2) {
+        tipo = 'calzado';
+      } else {
+        tipo = 'hibrido';
+      }
+
+      // Stock de seguridad sugerido (lead time = 3 días)
+      const LEAD_DAYS    = 3;
+      const SAFETY_MULT  = 1.3; // 30% buffer
+      const stockSugerido = tipo !== 'calzado'
+        ? Math.ceil(weeklyDemand * (LEAD_DAYS / 7) * SAFETY_MULT)
+        : 0;
+
+      return {
+        producto: sku.producto,
+        uniqueClients,
+        consistentClients,
+        eventos: events.length,
+        avgGap,
+        weeklyDemand,
+        totalQty,
+        tipo,
+        stockSugerido,
+      };
+    }).sort((a, b) => {
+      // Sort: base first, then hibrido, then calzado; within type by weeklyDemand desc
+      const order = { base: 0, hibrido: 1, calzado: 2 };
+      if (order[a.tipo] !== order[b.tipo]) return order[a.tipo] - order[b.tipo];
+      return b.weeklyDemand - a.weeklyDemand;
+    });
+  }, [rows, totalWeeks]);
+
+  const [filter, setFilter] = useState('todos'); // 'todos'|'base'|'hibrido'|'calzado'
+  const [search, setSearch] = useState('');
+  const invSort = useSort('weeklyDemand', 'desc');
+
+  const filtered = useMemo(() => {
+    let data = skuAnalysis;
+    if (filter !== 'todos') data = data.filter(s => s.tipo === filter);
+    if (search.trim()) {
+      const q = normStr(search);
+      data = data.filter(s => normStr(s.producto).includes(q));
+    }
+    return applySort(data, invSort.key, invSort.dir, (s, k) => s[k] ?? 0);
+  }, [skuAnalysis, filter, search, invSort.key, invSort.dir]);
+
+  const { page, go, totalPages, slice, total } = usePag(filtered, 50);
+
+  const counts = useMemo(() => ({
+    base:    skuAnalysis.filter(s => s.tipo === 'base').length,
+    hibrido: skuAnalysis.filter(s => s.tipo === 'hibrido').length,
+    calzado: skuAnalysis.filter(s => s.tipo === 'calzado').length,
+  }), [skuAnalysis]);
+
+  return (
+    <div className="space-y-4">
+      {/* ── Summary cards ── */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="card-hover bg-gray-800 border border-gray-700 rounded-xl p-4 cursor-pointer"
+          style={filter==='base' ? {borderColor:'rgba(16,185,129,0.5)',background:'rgba(16,185,129,0.06)'} : {}}
+          onClick={() => setFilter(filter==='base' ? 'todos' : 'base')}>
+          <div className="text-xs font-medium uppercase tracking-widest mb-2" style={{color:"#10B981"}}>🟢 Base Fija</div>
+          <div className="text-2xl font-bold tabular-nums text-emerald-300">{counts.base}</div>
+          <div className="text-xs mt-1.5" style={{color:"#555570"}}>SKUs — mantener stock siempre</div>
+        </div>
+
+        <div className="card-hover bg-gray-800 border border-gray-700 rounded-xl p-4 cursor-pointer"
+          style={filter==='hibrido' ? {borderColor:'rgba(245,158,11,0.5)',background:'rgba(245,158,11,0.06)'} : {}}
+          onClick={() => setFilter(filter==='hibrido' ? 'todos' : 'hibrido')}>
+          <div className="text-xs font-medium uppercase tracking-widest mb-2" style={{color:"#F59E0B"}}>🟡 Híbrido</div>
+          <div className="text-2xl font-bold tabular-nums text-yellow-300">{counts.hibrido}</div>
+          <div className="text-xs mt-1.5" style={{color:"#555570"}}>SKUs — monitorear y decidir</div>
+        </div>
+
+        <div className="card-hover bg-gray-800 border border-gray-700 rounded-xl p-4 cursor-pointer"
+          style={filter==='calzado' ? {borderColor:'rgba(239,68,68,0.5)',background:'rgba(239,68,68,0.06)'} : {}}
+          onClick={() => setFilter(filter==='calzado' ? 'todos' : 'calzado')}>
+          <div className="text-xs font-medium uppercase tracking-widest mb-2" style={{color:"#EF4444"}}>🔴 Calzado</div>
+          <div className="text-2xl font-bold tabular-nums text-red-300">{counts.calzado}</div>
+          <div className="text-xs mt-1.5" style={{color:"#555570"}}>SKUs — solo con pedido confirmado</div>
+        </div>
+      </div>
+
+      {/* ── Search ── */}
+      <SearchBar value={search} onChange={v => { setSearch(v); go(0); }} placeholder="Buscar producto…" />
+
+      {/* ── Table ── */}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-gray-700 flex items-center justify-between">
+          <span className="text-xs text-gray-500">
+            {filtered.length} producto{filtered.length !== 1 ? 's' : ''}
+            {filter !== 'todos' && ` — filtrado por ${filter}`}
+            {' · '}fuente: <span style={{color:"#c88d31"}}>{useGuias ? 'despachos' : 'ventas'}</span>
+          </span>
+          <span className="text-xs text-gray-600">Lead time asumido: 3 días · Buffer: 30%</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-800/60">
+              <tr>
+                <th className="px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-left whitespace-nowrap">Producto</th>
+                <th className="px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-left whitespace-nowrap">Tipo</th>
+                <th onClick={() => invSort.toggle('uniqueClients')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='uniqueClients' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Clientes únicos
+                </th>
+                <th onClick={() => invSort.toggle('consistentClients')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='consistentClients' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Clientes fijos
+                </th>
+                <th onClick={() => invSort.toggle('eventos')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='eventos' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Eventos
+                </th>
+                <th onClick={() => invSort.toggle('avgGap')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='avgGap' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Frec. (días)
+                </th>
+                <th onClick={() => invSort.toggle('weeklyDemand')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='weeklyDemand' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Demanda/semana
+                </th>
+                <th onClick={() => invSort.toggle('stockSugerido')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='stockSugerido' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Stock sugerido
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {slice.map(s => {
+                const tipoBadge = s.tipo === 'base'
+                  ? {bg:'rgba(16,185,129,0.12)',color:'#34D399',border:'rgba(16,185,129,0.3)',label:'Base Fija'}
+                  : s.tipo === 'hibrido'
+                  ? {bg:'rgba(245,158,11,0.12)',color:'#FBBF24',border:'rgba(245,158,11,0.3)',label:'Híbrido'}
+                  : {bg:'rgba(239,68,68,0.12)',color:'#F87171',border:'rgba(239,68,68,0.3)',label:'Calzado'};
+                return (
+                  <tr key={s.producto} className="hover:bg-blue-900/10 transition-colors">
+                    <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[260px]">
+                      <span className="block truncate" title={s.producto}>{s.producto}</span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span style={{
+                        fontSize:11, padding:'2px 8px', borderRadius:99, fontWeight:700,
+                        background: tipoBadge.bg, color: tipoBadge.color,
+                        border: `1px solid ${tipoBadge.border}`,
+                        whiteSpace:'nowrap'
+                      }}>
+                        {tipoBadge.label}
+                      </span>
+                    </td>
+                    <Td ch={s.uniqueClients} right color="text-blue-300"/>
+                    <Td ch={s.consistentClients} right color={s.consistentClients >= 2 ? "text-emerald-400" : "text-gray-500"}/>
+                    <Td ch={s.eventos} right dim/>
+                    <Td ch={s.avgGap !== null ? fmt(s.avgGap, 0) + 'd' : '—'} right dim/>
+                    <Td ch={fmt(s.weeklyDemand, 1)} right color="text-yellow-300"/>
+                    <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
+                      {s.stockSugerido > 0
+                        ? <span style={{
+                            fontSize:12, padding:'2px 8px', borderRadius:99, fontWeight:700,
+                            background:'rgba(16,185,129,0.1)', color:'#34D399',
+                            border:'1px solid rgba(16,185,129,0.25)'
+                          }}>
+                            {fmt(s.stockSugerido, 0)} u.
+                          </span>
+                        : <span style={{color:'#333345', fontSize:11}}>— sin stock</span>
+                      }
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <Pager page={page} totalPages={totalPages} go={go} total={total}/>
+      </div>
+
+      {/* ── Legend ── */}
+      <div className="rounded-xl p-4 text-xs leading-relaxed space-y-1.5" style={{background:'#0F0F16',border:'1px solid #1a1a28',color:'#444458'}}>
+        <p><span style={{color:'#34D399',fontWeight:700}}>🟢 Base Fija</span> — ≥3 clientes únicos, ≥2 compran en múltiples meses, ≥8 eventos. Mantener stock según demanda semanal.</p>
+        <p><span style={{color:'#FBBF24',fontWeight:700}}>🟡 Híbrido</span> — Patrón intermedio. Evaluar caso a caso; considerar mini-stock para los más frecuentes.</p>
+        <p><span style={{color:'#F87171',fontWeight:700}}>🔴 Calzado</span> — ≤1 cliente o ≤2 eventos. Comprar solo con pedido confirmado para no inmovilizar capital.</p>
+        <p style={{marginTop:6}}><span style={{color:'#9CA3AF'}}>Stock sugerido</span> = demanda semanal × 3 días de lead time × 1.3 (buffer). Solo para Base Fija e Híbrido.</p>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════
+//  (TAB 6 — CONVERTIR LISTA removed in Sprint 1)
+// ═══════════════════════════════════════════════
 const EmptyState = ({ msg, icon }) => (
   <div className="flex flex-col items-center justify-center py-24 gap-4">
     <div className="p-5 rounded-2xl" style={{background:"rgba(255,255,255,0.03)",border:"1px solid #1a1a28",color:"#2a2a40"}}>
@@ -2372,6 +3418,13 @@ const EmptyState = ({ msg, icon }) => (
 );
 
 function App() {
+  // ── Auth ────────────────────────────────────────────────────────
+  const [authState,   setAuthState]   = useState('checking'); // 'checking'|'setup'|'login'|'authenticated'
+  const [accessLevel, setAccessLevel] = useState(null);       // 'admin'|'user'
+  const masterKeyRef   = useRef(null);  // CryptoKey en memoria — nunca en estado/localStorage
+  const accessLevelRef = useRef(null);  // Ref para acceso desde callbacks
+
+  // ── Data ────────────────────────────────────────────────────────
   const [rawData,    setRawData]    = useState({ ventas: [], guias: [], compras: [] });
   const [detected,   setDetected]   = useState({ ventas: null, guias: null, compras: null, preciosCount: 0 });
   const [loading,    setLoading]    = useState(false);
@@ -2379,19 +3432,82 @@ function App() {
   const [activeTab,  setActiveTab]  = useState(0);
   const [priceQueue, setPriceQueue] = useState({ files: [], version: 0 });
 
+  const datePeriod = useMemo(() => {
+    if (!rawData.ventas.length) return null;
+    let min = Infinity, max = -Infinity;
+    rawData.ventas.forEach(r => {
+      const d = parseDate(col(r, "Fecha"));
+      if (d) { const t = d.getTime(); if (t < min) min = t; if (t > max) max = t; }
+    });
+    if (!isFinite(min)) return null;
+    return { from: new Date(min), to: new Date(max) };
+  }, [rawData.ventas]);
+
+  // ── Init: determinar pantalla ────────────────────────────────────
+  useEffect(() => {
+    setAuthState(GpCrypto.isSetupDone() ? 'login' : 'setup');
+  }, []);
+
+  // ── Handler compartido para setup y login ────────────────────────
+  // Todos los setters van DESPUÉS del await para que React 18
+  // los agrupe en un único re-render y no haya estados intermedios inválidos.
+  const handleAuth = useCallback(async ({ masterKey, level }) => {
+    masterKeyRef.current = masterKey;
+    try {
+      const [ventas, guias, compras] = await Promise.all([
+        GpCrypto.loadModule('ventas',  masterKey),
+        GpCrypto.loadModule('guias',   masterKey),
+        GpCrypto.loadModule('compras', masterKey),
+      ]);
+      const newData = { ventas: ventas||[], guias: guias||[], compras: compras||[] };
+      const hasAny  = Object.values(newData).some(d => d.length > 0);
+
+      // Todos los updates en la misma microtarea → React los agrupa en 1 render
+      accessLevelRef.current = level;
+      setAccessLevel(level);
+      setRawData(newData);
+      if (hasAny) {
+        setDetected({
+          ventas:  newData.ventas.length  ? `${newData.ventas.length} filas`  : null,
+          guias:   newData.guias.length   ? `${newData.guias.length} filas`   : null,
+          compras: newData.compras.length ? `${newData.compras.length} filas` : null,
+          preciosCount: 0,
+        });
+        setLoaded(true);
+      }
+      setAuthState('authenticated'); // dispara el render final del dashboard
+    } catch(e) {
+      console.error('handleAuth error:', e);
+      // Incluso si falla la carga de datos, mostramos el dashboard
+      accessLevelRef.current = level;
+      setAccessLevel(level);
+      setAuthState('authenticated');
+    }
+  }, []);
+
+  // ── Persistencia encriptada por módulo ───────────────────────────
+  useEffect(() => {
+    if (!masterKeyRef.current) return;
+    if (!Object.values(rawData).some(d => d.length > 0)) return;
+    ['ventas','guias','compras'].forEach(name => {
+      if (rawData[name].length > 0)
+        GpCrypto.saveModule(name, rawData[name], masterKeyRef.current);
+    });
+  }, [rawData]);
+
+  // ── handleFiles ANTES de cualquier return condicional (Rules of Hooks) ──
   const handleFiles = useCallback(async (fileList) => {
+    if (accessLevelRef.current !== 'admin') return;
     setLoading(true);
     const dataUpdates = {};
     const nameUpdates = {};
     const priceFiles  = [];
-
     for (const file of Array.from(fileList)) {
       const n = file.name.toLowerCase();
       let key = null;
       if      (n.includes("venta"))                          key = "ventas";
       else if (n.includes("guia") || n.includes("despacho")) key = "guias";
       else if (n.includes("compra"))                         key = "compras";
-
       if (key) {
         nameUpdates[key] = file.name;
         dataUpdates[key] = parseCSVText(await file.text());
@@ -2399,7 +3515,6 @@ function App() {
         priceFiles.push(file);
       }
     }
-
     if (Object.keys(dataUpdates).length > 0) {
       setRawData((prev)  => ({ ...prev, ...dataUpdates  }));
       setDetected((prev) => ({ ...prev, ...nameUpdates  }));
@@ -2408,30 +3523,59 @@ function App() {
       setDetected((prev) => ({ ...prev, preciosCount: (prev.preciosCount || 0) + priceFiles.length }));
       setPriceQueue((prev) => ({ files: priceFiles, version: prev.version + 1 }));
     }
-
     setLoading(false);
     setLoaded(true);
   }, []);
 
+  // ── Pantallas de autenticación (returns condicionales — van DESPUÉS de todos los hooks) ──
+  if (authState === 'checking') return (
+    <div className="min-h-screen flex items-center justify-center" style={{background:'#0A0A0F'}}>
+      <Loader2 size={28} className="animate-spin" style={{color:'#c88d31'}}/>
+    </div>
+  );
+  if (authState === 'setup') return <SetupScreen onSetup={handleAuth}/>;
+  if (authState === 'login') return <LoginScreen onLogin={handleAuth}/>;
+
+  // A partir de aquí: autenticado
+  const isAdmin = accessLevel === 'admin';
+
   const hasData = Object.values(rawData).some((d) => d.length > 0) || priceQueue.version > 0;
 
   const TABS = [
-    { label: "Reporte Ventas",        icon: <TrendingUp   size={15} />, count: rawData.ventas.length  },
-    { label: "Compras Clientes",       icon: <ShoppingCart size={15} />, count: rawData.guias.length   },
-    { label: "Proveedores",            icon: <Package      size={15} />, count: rawData.compras.length },
-    { label: "Optimizador de Precios", icon: <DollarSign   size={15} />, count: null                   },
-    { label: "Análisis Productos",    icon: <BarChart2    size={15} />, count: rawData.ventas.length  },
+    { label: "Resumen",    icon: <BarChart2    size={15} />, count: null                   },
+    { label: "Ventas",     icon: <TrendingUp   size={15} />, count: rawData.ventas.length  },
+    { label: "Clientes",   icon: <ShoppingCart size={15} />, count: rawData.guias.length   },
+    { label: "Compras",    icon: <Package      size={15} />, count: rawData.compras.length },
+    { label: "Precios",    icon: <DollarSign   size={15} />, count: null                   },
+    { label: "Productos",  icon: <BarChart2    size={15} />, count: rawData.ventas.length  },
+    { label: "Inventario", icon: <Package      size={15} />, count: rawData.guias.length || rawData.ventas.length },
   ];
 
-  if (!loaded) return (
-    <UploadScreen
-      onFiles={handleFiles}
-      loading={loading}
-      detected={detected}
-      hasData={hasData}
-      onBack={() => setLoaded(true)}
-    />
-  );
+  if (!loaded) return isAdmin
+    ? (
+      <UploadScreen
+        onFiles={handleFiles}
+        loading={loading}
+        detected={detected}
+        hasData={hasData}
+        onBack={() => setLoaded(true)}
+      />
+    ) : (
+      // Usuario sin datos: no puede cargar archivos
+      <div className="min-h-screen flex flex-col items-center justify-center p-6"
+        style={{ background:'#0A0A0F', position:'relative' }}>
+        <LogoBg/>
+        <div style={{position:'relative',zIndex:1,textAlign:'center',maxWidth:360}}>
+          <GestapackLogo height={40}/>
+          <p className="text-sm mt-8 font-medium" style={{color:'#555570'}}>
+            No hay datos disponibles aún.
+          </p>
+          <p className="text-xs mt-2" style={{color:'#333345'}}>
+            Solicita al administrador que cargue los archivos de datos.
+          </p>
+        </div>
+      </div>
+    );
 
   return (
     <div className="min-h-screen text-gray-100" style={{ background: "#0A0A0F", position: "relative" }}>
@@ -2449,29 +3593,48 @@ function App() {
             <GestapackLogo height={26} />
             <div className="w-px h-4 bg-gray-800" />
             <span className="text-xs font-medium tracking-widest uppercase" style={{ color: "#5a4010", letterSpacing: "0.2em" }}>Dashboard Comercial</span>
+            {datePeriod && loaded && (
+              <span className="text-xs tabular-nums" style={{color:"#444458"}}>
+                {fmtDate(datePeriod.from)} – {fmtDate(datePeriod.to)}
+              </span>
+            )}
           </div>
 
-          <button
-            onClick={() => setLoaded(false)}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-all"
-            style={{
-              color:      "#c88d31",
-              border:     "1px solid rgba(200,141,49,0.25)",
-              background: "rgba(200,141,49,0.06)",
+          {/* Botones solo visibles para admin — no renderizados para usuario */}
+          {isAdmin && (
+            <button
+              onClick={() => setLoaded(false)}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-all"
+              style={{ color:"#c88d31", border:"1px solid rgba(200,141,49,0.25)", background:"rgba(200,141,49,0.06)" }}
+              onMouseEnter={e=>{ e.currentTarget.style.background="rgba(200,141,49,0.14)"; e.currentTarget.style.borderColor="rgba(200,141,49,0.45)"; }}
+              onMouseLeave={e=>{ e.currentTarget.style.background="rgba(200,141,49,0.06)"; e.currentTarget.style.borderColor="rgba(200,141,49,0.25)"; }}
+            >
+              <Upload size={12}/> Agregar archivos
+            </button>
+          )}
+          {isAdmin && loaded && (
+            <button onClick={() => {
+              GpCrypto.clearAll();
+              setRawData({ventas:[],guias:[],compras:[]});
+              setDetected({ventas:null,guias:null,compras:null,preciosCount:0});
+              setLoaded(false);
+              setPriceQueue({files:[],version:0});
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(200,141,49,0.14)"; e.currentTarget.style.borderColor = "rgba(200,141,49,0.45)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(200,141,49,0.06)"; e.currentTarget.style.borderColor = "rgba(200,141,49,0.25)"; }}
-          >
-            <Upload size={12} /> Agregar archivos
-          </button>
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-all"
+            style={{color:"#6B7280",border:"1px solid rgba(107,114,128,0.25)",background:"transparent"}}
+            onMouseEnter={e=>{e.currentTarget.style.color="#EF4444";e.currentTarget.style.borderColor="rgba(239,68,68,0.4)";}}
+            onMouseLeave={e=>{e.currentTarget.style.color="#6B7280";e.currentTarget.style.borderColor="rgba(107,114,128,0.25)";}}>
+            <X size={12}/> Limpiar
+            </button>
+          )}
         </div>
 
         {/* Tabs — grupo Análisis / separador / grupo Operacional */}
         <div className="flex items-center gap-1 flex-wrap">
           {TABS.map((t, i) => {
             const isActive = activeTab === i;
-            // Divisor visual entre tab 2 (Proveedores) y tab 3 (Optimizador)
-            const showDivider = i === 3;
+            // Divisor visual entre tab 3 (Proveedores) y tab 4 (Optimizador)
+            const showDivider = i === 4;
             return (
               <React.Fragment key={i}>
                 {showDivider && (
@@ -2505,10 +3668,10 @@ function App() {
                       {t.count.toLocaleString("es-CL")}
                     </span>
                   )}
-                  {i === 3 && !isActive && (
+                  {t.isNew && !isActive && (
                     <span className="px-1.5 py-0.5 rounded-full text-xs"
-                      style={{ background: "rgba(200,141,49,0.12)", color: "#c88d31", border: "1px solid rgba(200,141,49,0.25)" }}>
-                      BETA
+                      style={{ background: "rgba(16,185,129,0.12)", color: "#34D399", border: "1px solid rgba(16,185,129,0.25)" }}>
+                      NUEVO
                     </span>
                   )}
                 </button>
@@ -2520,21 +3683,29 @@ function App() {
 
       {/* Tab content */}
       <div className="p-5 max-w-screen-2xl mx-auto">
-        {activeTab === 0 && (rawData.ventas.length > 0
+        {activeTab === 0 && (rawData.ventas.length > 0 || rawData.compras.length > 0
+          ? <ResumenTab ventasData={rawData.ventas} guiasData={rawData.guias} comprasData={rawData.compras} />
+          : <EmptyState msg="Carga datos para ver el resumen" icon={<BarChart2 size={48}/>}/>
+        )}
+        {activeTab === 1 && (rawData.ventas.length > 0
           ? <VentasTab  data={rawData.ventas}  />
           : <EmptyState msg="No se detectó archivo de ventas"            icon={<TrendingUp   size={48} />} />)}
-        {activeTab === 1 && (rawData.guias.length > 0
+        {activeTab === 2 && (rawData.guias.length > 0
           ? <GuiasTab   data={rawData.guias}   />
           : <EmptyState msg="No se detectó archivo de guías de despacho" icon={<ShoppingCart size={48} />} />)}
-        {activeTab === 2 && (rawData.compras.length > 0
-          ? <ComprasTab data={rawData.compras} />
+        {activeTab === 3 && (rawData.compras.length > 0
+          ? <ComprasTab data={rawData.compras} ventasData={rawData.ventas} />
           : <EmptyState msg="No se detectó archivo de compras"           icon={<Package      size={48} />} />)}
-        <div style={{display: activeTab === 3 ? "block" : "none"}}>
+        <div style={{display: activeTab === 4 ? "block" : "none"}}>
           <PreciosTab pendingFiles={priceQueue} />
         </div>
-        {activeTab === 4 && (rawData.ventas.length > 0
+        {activeTab === 5 && (rawData.ventas.length > 0
           ? <ProductosErrorBoundary><ProductosTab data={rawData.ventas} /></ProductosErrorBoundary>
           : <EmptyState msg="No se detectó archivo de ventas" icon={<BarChart2 size={48} />} />)}
+        {activeTab === 6 && (rawData.guias.length > 0 || rawData.ventas.length > 0
+          ? <InventarioTab guiasData={rawData.guias} ventasData={rawData.ventas} />
+          : <EmptyState msg="Carga datos de ventas o despachos para ver el análisis de inventario" icon={<Package size={48}/>}/>
+        )}
       </div>
     </div>
   );
