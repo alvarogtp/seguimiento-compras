@@ -53,6 +53,13 @@ import * as XLSX from "xlsx";
 import { Search, TrendingUp, ShoppingCart, Package, ChevronLeft, ChevronRight, Upload, BarChart2, X, Award, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown, ArrowUpDown, Download, Eye, Loader2, Info, DollarSign, CheckCircle, Tag, Trash2, FileText } from "lucide-react";
 
 // ═══════════════════════════════════════════════
+//  SEED META — configuración de PINs pre-establecida
+//  Null = primera vez (se muestra setup). Objeto = login directo.
+//  Para actualizar: admin exporta config desde el dashboard
+// ═══════════════════════════════════════════════
+const SEED_META = null; // reemplazar con el JSON exportado tras el primer setup
+
+// ═══════════════════════════════════════════════
 //  SEED PRECIOS — listas de precio S23 pre-cargadas
 //  537 precios · 8 proveedores
 // ═══════════════════════════════════════════════
@@ -117,7 +124,7 @@ const GpCrypto = (() => {
   }
 
   return {
-    isSetupDone() { return !!localStorage.getItem(META_KEY); },
+    isSetupDone() { return !!localStorage.getItem(META_KEY) || (SEED_META !== null && SEED_META !== undefined); },
 
     // Primera configuración: genera master key y la cifra con ambos PINs
     async setup(adminPin, userPin) {
@@ -3464,6 +3471,10 @@ function App() {
 
   // ── Init: determinar pantalla ────────────────────────────────────
   useEffect(() => {
+    // Si no hay config local pero hay SEED_META en el HTML → inicializar localStorage
+    if (!localStorage.getItem('gp_meta_v1') && SEED_META) {
+      try { localStorage.setItem('gp_meta_v1', JSON.stringify(SEED_META)); } catch(e) {}
+    }
     setAuthState(GpCrypto.isSetupDone() ? 'login' : 'setup');
   }, []);
 
@@ -3625,6 +3636,27 @@ function App() {
           </div>
 
           {/* Botones solo visibles para admin — no renderizados para usuario */}
+          {isAdmin && (
+            <button
+              onClick={async () => {
+                const meta = localStorage.getItem('gp_meta_v1');
+                if (!meta) { alert('No hay configuración guardada aún.'); return; }
+                try {
+                  await navigator.clipboard.writeText(meta);
+                  alert('✅ Configuración copiada.\nCompártela para embeber en el HTML y que otros usuarios vean el login directamente.');
+                } catch(e) {
+                  // Fallback: show in prompt
+                  prompt('Copia este texto y compártelo:', meta);
+                }
+              }}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-all"
+              style={{ color:"#A78BFA", border:"1px solid rgba(167,139,250,0.25)", background:"rgba(167,139,250,0.06)" }}
+              onMouseEnter={e=>{ e.currentTarget.style.background="rgba(167,139,250,0.14)"; e.currentTarget.style.borderColor="rgba(167,139,250,0.45)"; }}
+              onMouseLeave={e=>{ e.currentTarget.style.background="rgba(167,139,250,0.06)"; e.currentTarget.style.borderColor="rgba(167,139,250,0.25)"; }}
+            >
+              <Download size={12}/> Exportar config
+            </button>
+          )}
           {isAdmin && (
             <button
               onClick={() => setLoaded(false)}
