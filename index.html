@@ -3196,31 +3196,29 @@ const InventarioTab = ({ guiasData, ventasData }) => {
   }, [rows]);
   const totalWeeks = totalDays / 7;
 
-  // Core SKU analysis
+  // Core SKU analysis — framework 7/15/21 + detección de ventas calzadas
+  const CALZADA_MULT = 3; // evento > 3× la mediana del SKU = venta calzada
+  const DIAS_MIN  = 7;
+  const DIAS_OBJ  = 15;
+  const DIAS_MAX  = 21;
+
   const skuAnalysis = useMemo(() => {
     if (!rows.length) return [];
 
-    // Group events by product
+    // Agrupar eventos por producto
     const skuMap = {};
     rows.forEach(r => {
       const k = r.producto;
       if (!skuMap[k]) skuMap[k] = { producto: k, events: [], clientSet: new Set() };
-      skuMap[k].events.push({ fecha: r.fecha, cliente: r.cliente, cantidad: r.cantidad });
+      skuMap[k].events.push({ fecha: r.fecha, cliente: r.cliente, cantidad: r.cantidad || 1 });
       if (r.cliente) skuMap[k].clientSet.add(r.cliente);
     });
 
     return Object.values(skuMap).map(sku => {
-      const events = [...sku.events].sort((a, b) => a.fecha - b.fecha);
+      const events       = [...sku.events].sort((a, b) => a.fecha - b.fecha);
       const uniqueClients = sku.clientSet.size;
 
-      // Average gap between consecutive events (days)
-      let avgGap = null;
-      if (events.length > 1) {
-        const gaps = events.slice(1).map((e, i) => (e.fecha - events[i].fecha) / 86400000);
-        avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
-      }
-
-      // Clients who bought in ≥2 different calendar months
+      // Clientes con compra en ≥2 meses distintos
       let consistentClients = 0;
       sku.clientSet.forEach(c => {
         const months = new Set(
@@ -3230,14 +3228,19 @@ const InventarioTab = ({ guiasData, ventasData }) => {
         if (months.size >= 2) consistentClients++;
       });
 
-      // Weekly demand (total qty / total weeks)
-      const totalQty     = events.reduce((s, e) => s + (e.cantidad || 1), 0);
-      const weeklyDemand = totalWeeks > 0 ? totalQty / totalWeeks : 0;
+      // ── Detección de ventas calzadas por volumen (3× mediana) ────────
+      const sortedQty = [...events.map(e => e.cantidad)].sort((a, b) => a - b);
+      const medianQty = sortedQty[Math.floor(sortedQty.length / 2)] || 1;
+      const calzadaThreshold = medianQty * CALZADA_MULT;
 
-      // ── Classification rules ───────────────────────────────────────
-      // BASE FIJA:  ≥3 unique clients AND ≥2 consistent clients AND ≥8 events
-      // CALZADO:    ≤1 unique client OR ≤2 events total
-      // HÍBRIDO:    everything in between
+      const normalEvents  = events.filter(e => e.cantidad <= calzadaThreshold);
+      const calzadaEvents = events.filter(e => e.cantidad >  calzadaThreshold);
+      const calzadaQty    = calzadaEvents.reduce((s, e) => s + e.cantidad, 0);
+
+      // ── Clasificación del SKU ─────────────────────────────────────────
+      // BASE FIJA:  ≥3 clientes únicos, ≥2 consistentes, ≥8 eventos
+      // CALZADO:    ≤1 cliente o ≤2 eventos
+      // HÍBRIDO:    intermedio
       let tipo;
       if (uniqueClients >= 3 && consistentClients >= 2 && events.length >= 8) {
         tipo = 'base';
@@ -3247,35 +3250,38 @@ const InventarioTab = ({ guiasData, ventasData }) => {
         tipo = 'hibrido';
       }
 
-      // Stock de seguridad sugerido (lead time = 3 días)
-      const LEAD_DAYS    = 3;
-      const SAFETY_MULT  = 1.3; // 30% buffer
-      const stockSugerido = tipo !== 'calzado'
-        ? Math.ceil(weeklyDemand * (LEAD_DAYS / 7) * SAFETY_MULT)
-        : 0;
+      // ── Demanda base (excluye calzadas) y targets de stock ───────────
+      const baseQty        = normalEvents.reduce((s, e) => s + e.cantidad, 0);
+      const baseDailyDemand = totalDays > 0 ? baseQty / totalDays : 0;
+
+      const stockMin = tipo !== 'calzado' ? Math.ceil(baseDailyDemand * DIAS_MIN) : 0;
+      const stockObj = tipo !== 'calzado' ? Math.ceil(baseDailyDemand * DIAS_OBJ) : 0;
+      const stockMax = tipo !== 'calzado' ? Math.ceil(baseDailyDemand * DIAS_MAX) : 0;
 
       return {
         producto: sku.producto,
         uniqueClients,
         consistentClients,
-        eventos: events.length,
-        avgGap,
-        weeklyDemand,
-        totalQty,
+        eventos:          events.length,
+        eventosBase:      normalEvents.length,
+        calzadaCount:     calzadaEvents.length,
+        calzadaQty,
+        baseDailyDemand,
         tipo,
-        stockSugerido,
+        stockMin,
+        stockObj,
+        stockMax,
       };
     }).sort((a, b) => {
-      // Sort: base first, then hibrido, then calzado; within type by weeklyDemand desc
       const order = { base: 0, hibrido: 1, calzado: 2 };
       if (order[a.tipo] !== order[b.tipo]) return order[a.tipo] - order[b.tipo];
-      return b.weeklyDemand - a.weeklyDemand;
+      return b.stockObj - a.stockObj;
     });
-  }, [rows, totalWeeks]);
+  }, [rows, totalDays]);
 
   const [filter, setFilter] = useState('todos'); // 'todos'|'base'|'hibrido'|'calzado'
   const [search, setSearch] = useState('');
-  const invSort = useSort('weeklyDemand', 'desc');
+  const invSort = useSort('stockObj', 'desc');
 
   const filtered = useMemo(() => {
     let data = skuAnalysis;
@@ -3335,7 +3341,7 @@ const InventarioTab = ({ guiasData, ventasData }) => {
             {filter !== 'todos' && ` — filtrado por ${filter}`}
             {' · '}fuente: <span style={{color:"#c88d31"}}>{useGuias ? 'despachos' : 'ventas'}</span>
           </span>
-          <span className="text-xs text-gray-600">Lead time asumido: 3 días · Buffer: 30%</span>
+          <span className="text-xs text-gray-600">Marco KPI: <span style={{color:'#6B7280'}}>7d mín</span> · <span style={{color:'#34D399'}}>15d objetivo</span> · <span style={{color:'#6B7280'}}>21d máx</span> · umbral calzada: 3× mediana</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -3351,21 +3357,21 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                     className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='consistentClients' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
                   Clientes fijos
                 </th>
-                <th onClick={() => invSort.toggle('eventos')}
-                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='eventos' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
-                  Eventos
+                <th onClick={() => invSort.toggle('eventosBase')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='eventosBase' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Ev. base
                 </th>
-                <th onClick={() => invSort.toggle('avgGap')}
-                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='avgGap' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
-                  Frec. (días)
+                <th onClick={() => invSort.toggle('baseDailyDemand')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='baseDailyDemand' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Demanda/día
                 </th>
-                <th onClick={() => invSort.toggle('weeklyDemand')}
-                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='weeklyDemand' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
-                  Demanda/semana
+                <th onClick={() => invSort.toggle('stockObj')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='stockObj' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  KPI 7d · 15d · 21d
                 </th>
-                <th onClick={() => invSort.toggle('stockSugerido')}
-                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='stockSugerido' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
-                  Stock sugerido
+                <th onClick={() => invSort.toggle('calzadaCount')}
+                    className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='calzadaCount' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
+                  Calzadas
                 </th>
               </tr>
             </thead>
@@ -3393,19 +3399,31 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                     </td>
                     <Td ch={s.uniqueClients} right color="text-blue-300"/>
                     <Td ch={s.consistentClients} right color={s.consistentClients >= 2 ? "text-emerald-400" : "text-gray-500"}/>
-                    <Td ch={s.eventos} right dim/>
-                    <Td ch={s.avgGap !== null ? fmt(s.avgGap, 0) + 'd' : '—'} right dim/>
-                    <Td ch={fmt(s.weeklyDemand, 1)} right color="text-yellow-300"/>
+                    <Td ch={s.eventosBase} right dim/>
+                    <Td ch={s.baseDailyDemand > 0 ? fmt(s.baseDailyDemand, 1) : '—'} right color="text-yellow-300"/>
                     <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
-                      {s.stockSugerido > 0
-                        ? <span style={{
-                            fontSize:12, padding:'2px 8px', borderRadius:99, fontWeight:700,
-                            background:'rgba(16,185,129,0.1)', color:'#34D399',
-                            border:'1px solid rgba(16,185,129,0.25)'
-                          }}>
-                            {fmt(s.stockSugerido, 0)} u.
+                      {s.tipo !== 'calzado'
+                        ? <span className="inline-flex items-center gap-1 font-mono" style={{fontSize:12}}>
+                            <span style={{color:'#6B7280'}}>{fmt(s.stockMin,0)}</span>
+                            <span style={{color:'#374151',fontSize:10}}>·</span>
+                            <span style={{color:'#34D399',fontWeight:700}}>{fmt(s.stockObj,0)}</span>
+                            <span style={{color:'#374151',fontSize:10}}>·</span>
+                            <span style={{color:'#6B7280'}}>{fmt(s.stockMax,0)}</span>
+                            <span style={{color:'#4B5563',fontSize:10}}> u.</span>
                           </span>
-                        : <span style={{color:'#333345', fontSize:11}}>— sin stock</span>
+                        : <span style={{color:'#333345',fontSize:11}}>— bajo pedido</span>
+                      }
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
+                      {s.calzadaCount > 0
+                        ? <span style={{
+                            fontSize:11, padding:'2px 8px', borderRadius:99, fontWeight:600,
+                            background:'rgba(139,92,246,0.12)', color:'#A78BFA',
+                            border:'1px solid rgba(139,92,246,0.25)'
+                          }}>
+                            {s.calzadaCount} ev · {fmt(s.calzadaQty,0)} u.
+                          </span>
+                        : <span style={{color:'#333345',fontSize:11}}>—</span>
                       }
                     </td>
                   </tr>
@@ -3419,10 +3437,11 @@ const InventarioTab = ({ guiasData, ventasData }) => {
 
       {/* ── Legend ── */}
       <div className="rounded-xl p-4 text-xs leading-relaxed space-y-1.5" style={{background:'#0F0F16',border:'1px solid #1a1a28',color:'#444458'}}>
-        <p><span style={{color:'#34D399',fontWeight:700}}>🟢 Base Fija</span> — ≥3 clientes únicos, ≥2 compran en múltiples meses, ≥8 eventos. Mantener stock según demanda semanal.</p>
-        <p><span style={{color:'#FBBF24',fontWeight:700}}>🟡 Híbrido</span> — Patrón intermedio. Evaluar caso a caso; considerar mini-stock para los más frecuentes.</p>
+        <p><span style={{color:'#34D399',fontWeight:700}}>🟢 Base Fija</span> — ≥3 clientes únicos, ≥2 compran en múltiples meses, ≥8 eventos. Mantener stock según demanda base diaria.</p>
+        <p><span style={{color:'#FBBF24',fontWeight:700}}>🟡 Híbrido</span> — Patrón intermedio. Evaluar caso a caso; considerar mantener stock objetivo de 15 días.</p>
         <p><span style={{color:'#F87171',fontWeight:700}}>🔴 Calzado</span> — ≤1 cliente o ≤2 eventos. Comprar solo con pedido confirmado para no inmovilizar capital.</p>
-        <p style={{marginTop:6}}><span style={{color:'#9CA3AF'}}>Stock sugerido</span> = demanda semanal × 3 días de lead time × 1.3 (buffer). Solo para Base Fija e Híbrido.</p>
+        <p style={{marginTop:6}}><span style={{color:'#6B7280'}}>7d mínimo</span> · <span style={{color:'#34D399',fontWeight:700}}>15d objetivo</span> · <span style={{color:'#6B7280'}}>21d máximo</span> — marco KPI de la jefatura de compras. Solo para Base Fija e Híbrido.</p>
+        <p><span style={{color:'#A78BFA'}}>Calzadas</span> — eventos con volumen &gt; 3× la mediana del SKU. Se excluyen del cálculo de demanda base para no sobreestimar el stock necesario.</p>
       </div>
     </div>
   );
