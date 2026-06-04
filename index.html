@@ -3182,6 +3182,7 @@ const InventarioTab = ({ guiasData, ventasData }) => {
       cliente:  col(r, "Razón Social", "Razon Social"),
       fecha:    parseDate(col(r, "Fecha")),
       cantidad: parseNum(col(r, "Cantidad")),
+      precio:   parseNum(col(r, "Precio Un.")),
     })).filter(r => r.fecha && r.producto && r.cliente),
   [sourceData]);
 
@@ -3210,7 +3211,7 @@ const InventarioTab = ({ guiasData, ventasData }) => {
     rows.forEach(r => {
       const k = r.producto;
       if (!skuMap[k]) skuMap[k] = { producto: k, events: [], clientSet: new Set() };
-      skuMap[k].events.push({ fecha: r.fecha, cliente: r.cliente, cantidad: r.cantidad || 1 });
+      skuMap[k].events.push({ fecha: r.fecha, cliente: r.cliente, cantidad: r.cantidad || 1, precio: r.precio || 0 });
       if (r.cliente) skuMap[k].clientSet.add(r.cliente);
     });
 
@@ -3266,6 +3267,9 @@ const InventarioTab = ({ guiasData, ventasData }) => {
         eventosBase:      normalEvents.length,
         calzadaCount:     calzadaEvents.length,
         calzadaQty,
+        calzadaEvents,        // full list for detail modal
+        medianQty,
+        calzadaThreshold,
         baseDailyDemand,
         tipo,
         stockMin,
@@ -3282,6 +3286,10 @@ const InventarioTab = ({ guiasData, ventasData }) => {
   const [filter, setFilter] = useState('todos'); // 'todos'|'base'|'hibrido'|'calzado'
   const [search, setSearch] = useState('');
   const invSort = useSort('stockObj', 'desc');
+  const [calzadaModal, setCalzadaModal] = useState(null); // { producto, events, medianQty, threshold }
+
+  // Unidades de medida: Loco Conserva → uns., resto → kgs.
+  const getUnit = prod => /loco\s+conserva/i.test(prod) ? 'uns.' : 'kgs.';
 
   const filtered = useMemo(() => {
     let data = skuAnalysis;
@@ -3400,7 +3408,7 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                     <Td ch={s.uniqueClients} right color="text-blue-300"/>
                     <Td ch={s.consistentClients} right color={s.consistentClients >= 2 ? "text-emerald-400" : "text-gray-500"}/>
                     <Td ch={s.eventosBase} right dim/>
-                    <Td ch={s.baseDailyDemand > 0 ? fmt(s.baseDailyDemand, 1) : '—'} right color="text-yellow-300"/>
+                    <Td ch={s.baseDailyDemand > 0 ? fmt(s.baseDailyDemand, 1) + ' ' + getUnit(s.producto) : '—'} right color="text-yellow-300"/>
                     <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
                       {s.tipo !== 'calzado'
                         ? <span className="inline-flex items-center gap-1 font-mono" style={{fontSize:12}}>
@@ -3409,20 +3417,26 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                             <span style={{color:'#34D399',fontWeight:700}}>{fmt(s.stockObj,0)}</span>
                             <span style={{color:'#374151',fontSize:10}}>·</span>
                             <span style={{color:'#6B7280'}}>{fmt(s.stockMax,0)}</span>
-                            <span style={{color:'#4B5563',fontSize:10}}> u.</span>
+                            <span style={{color:'#4B5563',fontSize:10}}> {getUnit(s.producto)}</span>
                           </span>
                         : <span style={{color:'#333345',fontSize:11}}>— bajo pedido</span>
                       }
                     </td>
                     <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
                       {s.calzadaCount > 0
-                        ? <span style={{
-                            fontSize:11, padding:'2px 8px', borderRadius:99, fontWeight:600,
-                            background:'rgba(139,92,246,0.12)', color:'#A78BFA',
-                            border:'1px solid rgba(139,92,246,0.25)'
-                          }}>
-                            {s.calzadaCount} ev · {fmt(s.calzadaQty,0)} u.
-                          </span>
+                        ? <button
+                            onClick={() => setCalzadaModal({ producto: s.producto, events: s.calzadaEvents, medianQty: s.medianQty, threshold: s.calzadaThreshold })}
+                            style={{
+                              fontSize:11, padding:'2px 8px', borderRadius:99, fontWeight:600,
+                              background:'rgba(139,92,246,0.12)', color:'#A78BFA',
+                              border:'1px solid rgba(139,92,246,0.25)', cursor:'pointer',
+                              transition:'background 0.15s'
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.background='rgba(139,92,246,0.25)'}
+                            onMouseLeave={e => e.currentTarget.style.background='rgba(139,92,246,0.12)'}
+                          >
+                            {s.calzadaCount} ev · {fmt(s.calzadaQty,0)} {getUnit(s.producto)} ↗
+                          </button>
                         : <span style={{color:'#333345',fontSize:11}}>—</span>
                       }
                     </td>
@@ -3441,8 +3455,112 @@ const InventarioTab = ({ guiasData, ventasData }) => {
         <p><span style={{color:'#FBBF24',fontWeight:700}}>🟡 Híbrido</span> — Patrón intermedio. Evaluar caso a caso; considerar mantener stock objetivo de 15 días.</p>
         <p><span style={{color:'#F87171',fontWeight:700}}>🔴 Calzado</span> — ≤1 cliente o ≤2 eventos. Comprar solo con pedido confirmado para no inmovilizar capital.</p>
         <p style={{marginTop:6}}><span style={{color:'#6B7280'}}>7d mínimo</span> · <span style={{color:'#34D399',fontWeight:700}}>15d objetivo</span> · <span style={{color:'#6B7280'}}>21d máximo</span> — marco KPI de la jefatura de compras. Solo para Base Fija e Híbrido.</p>
-        <p><span style={{color:'#A78BFA'}}>Calzadas</span> — eventos con volumen &gt; 3× la mediana del SKU. Se excluyen del cálculo de demanda base para no sobreestimar el stock necesario.</p>
+        <p><span style={{color:'#A78BFA'}}>Calzadas</span> — eventos con volumen &gt; 3× la mediana del SKU. Se excluyen del cálculo de demanda base. Haz click en el badge para ver el detalle.</p>
       </div>
+
+      {/* ── Modal detalle ventas calzadas ── */}
+      {calzadaModal && (() => {
+        const { producto, events, medianQty, threshold } = calzadaModal;
+        const unit = getUnit(producto);
+        const unitLabel = unit === 'uns.' ? 'unidades' : 'kilos';
+        // Agrupar por cliente para ver patrón
+        const porCliente = {};
+        events.forEach(e => {
+          if (!porCliente[e.cliente]) porCliente[e.cliente] = { cliente: e.cliente, eventos: [], totalQty: 0, totalAmt: 0 };
+          porCliente[e.cliente].eventos.push(e);
+          porCliente[e.cliente].totalQty += e.cantidad;
+          porCliente[e.cliente].totalAmt += e.cantidad * (e.precio || 0);
+        });
+        const clienteGroups = Object.values(porCliente).sort((a,b) => b.totalQty - a.totalQty);
+        const grandTotalQty = events.reduce((s,e) => s + e.cantidad, 0);
+        const grandTotalAmt = events.reduce((s,e) => s + e.cantidad * (e.precio || 0), 0);
+        const fmtDate = d => d ? `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getFullYear()}` : '—';
+        const fmtCLP = n => n > 0 ? '$' + Math.round(n).toLocaleString('es-CL') : '—';
+
+        return (
+          <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+               onClick={() => setCalzadaModal(null)}>
+            <div style={{background:'#111118',border:'1px solid #2a2a3a',borderRadius:16,width:'100%',maxWidth:780,maxHeight:'85vh',display:'flex',flexDirection:'column',overflow:'hidden'}}
+                 onClick={e => e.stopPropagation()}>
+
+              {/* Header */}
+              <div style={{padding:'16px 20px',borderBottom:'1px solid #1e1e2e',display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12}}>
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    <span style={{fontSize:11,padding:'2px 8px',borderRadius:99,fontWeight:700,background:'rgba(139,92,246,0.15)',color:'#A78BFA',border:'1px solid rgba(139,92,246,0.3)'}}>
+                      Ventas calzadas
+                    </span>
+                    <span style={{fontSize:11,color:'#4B5563'}}>umbral: &gt; {fmt(threshold,0)} {unit} (3× mediana {fmt(medianQty,0)} {unit})</span>
+                  </div>
+                  <div style={{fontSize:15,fontWeight:700,color:'#E5E7EB',lineHeight:1.3}}>{producto}</div>
+                  <div style={{fontSize:12,color:'#6B7280',marginTop:3}}>
+                    {events.length} evento{events.length!==1?'s':''} · {fmt(grandTotalQty,0)} {unit} totales
+                    {grandTotalAmt > 0 && <> · {fmtCLP(grandTotalAmt)}</>}
+                  </div>
+                </div>
+                <button onClick={() => setCalzadaModal(null)}
+                        style={{background:'rgba(255,255,255,0.05)',border:'1px solid #2a2a3a',borderRadius:8,padding:'4px 10px',color:'#9CA3AF',cursor:'pointer',fontSize:13,flexShrink:0}}>
+                  ✕ Cerrar
+                </button>
+              </div>
+
+              {/* Body — scrollable */}
+              <div style={{overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:16}}>
+                {clienteGroups.map(cg => (
+                  <div key={cg.cliente} style={{background:'#0D0D14',border:'1px solid #1a1a28',borderRadius:12,overflow:'hidden'}}>
+                    {/* Cliente header */}
+                    <div style={{padding:'10px 14px',background:'rgba(139,92,246,0.07)',borderBottom:'1px solid #1a1a28',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                      <span style={{fontSize:13,fontWeight:600,color:'#C4B5FD'}}>{cg.cliente}</span>
+                      <span style={{fontSize:11,color:'#6B7280'}}>
+                        {cg.eventos.length} ev · {fmt(cg.totalQty,0)} {unit}
+                        {cg.totalAmt > 0 && <> · {fmtCLP(cg.totalAmt)}</>}
+                      </span>
+                    </div>
+                    {/* Eventos del cliente */}
+                    <table style={{width:'100%',borderCollapse:'collapse'}}>
+                      <thead>
+                        <tr style={{background:'rgba(255,255,255,0.02)'}}>
+                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'left'}}>Fecha</th>
+                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Cantidad</th>
+                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Precio unit.</th>
+                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cg.eventos.sort((a,b)=>b.fecha-a.fecha).map((e,i) => (
+                          <tr key={i} style={{borderTop:'1px solid #1a1a28'}}>
+                            <td style={{padding:'7px 14px',fontSize:12,color:'#9CA3AF'}}>{fmtDate(e.fecha)}</td>
+                            <td style={{padding:'7px 14px',fontSize:13,fontWeight:700,color:'#A78BFA',textAlign:'right'}}>{fmt(e.cantidad,0)} {unit}</td>
+                            <td style={{padding:'7px 14px',fontSize:12,color:'#6B7280',textAlign:'right'}}>{fmtCLP(e.precio)}</td>
+                            <td style={{padding:'7px 14px',fontSize:12,color: e.precio > 0 ? '#E5E7EB' : '#4B5563',textAlign:'right'}}>{fmtCLP(e.cantidad * (e.precio||0))}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+
+              {/* Footer */}
+              <div style={{padding:'12px 20px',borderTop:'1px solid #1e1e2e',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                <span style={{fontSize:11,color:'#4B5563'}}>
+                  Estos eventos están excluidos del cálculo de demanda base y targets de stock del SKU.
+                </span>
+                <div style={{display:'flex',gap:16,textAlign:'right'}}>
+                  <div>
+                    <div style={{fontSize:10,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em'}}>Total {unitLabel}</div>
+                    <div style={{fontSize:15,fontWeight:700,color:'#A78BFA'}}>{fmt(grandTotalQty,0)} {unit}</div>
+                  </div>
+                  {grandTotalAmt > 0 && <div>
+                    <div style={{fontSize:10,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em'}}>Total monto</div>
+                    <div style={{fontSize:15,fontWeight:700,color:'#E5E7EB'}}>{fmtCLP(grandTotalAmt)}</div>
+                  </div>}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
