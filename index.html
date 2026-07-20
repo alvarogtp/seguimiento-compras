@@ -52,7 +52,7 @@ import React from "react";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import * as XLSX from "xlsx";
-import { Search, TrendingUp, ShoppingCart, Package, ChevronLeft, ChevronRight, Upload, BarChart2, X, Award, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown, ArrowUpDown, Download, Eye, Loader2, Info, DollarSign, CheckCircle, Tag, Trash2, FileText } from "lucide-react";
+import { Search, TrendingUp, ShoppingCart, Package, ChevronLeft, ChevronRight, Upload, BarChart2, X, Award, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown, ArrowUpDown, Download, Eye, Loader2, Info, DollarSign, CheckCircle, Tag, Trash2, FileText, AlertTriangle } from "lucide-react";
 
 // ═══════════════════════════════════════════════
 //  SEED META — configuración de PINs pre-establecida
@@ -1202,11 +1202,14 @@ const DetailPanel = ({ title, subtitle, onClose, children }) => {
   );
 };
 
-const VentasTab = ({ data }) => {
-  const [search,      setSearch]      = useState("");
-  const [metric,      setMetric]      = useState("venta");
-  const [showTop,     setShowTop]     = useState("venta");
-  const [panelClient, setPanelClient] = useState(null);
+const VentasTab = ({ data, guiasData = [] }) => {
+  const [search,        setSearch]        = useState("");
+  const [metric,        setMetric]        = useState("venta");
+  const [showTop,       setShowTop]       = useState("venta");
+  const [panelClient,   setPanelClient]   = useState(null);
+  const [panelProduct,  setPanelProduct]  = useState(null);
+  const [dateFrom,      setDateFrom]      = useState("");
+  const [dateTo,        setDateTo]        = useState("");
 
   const mainSort = useSort("totalV", "desc");
   const topSort  = useSort(null,     "desc");
@@ -1221,28 +1224,67 @@ const VentasTab = ({ data }) => {
     })).filter((r) => r.fecha && r.cliente),
   [data]);
 
-  const refDate = useMemo(() => {
-    if (!rows.length) return new Date();
-    let max = -Infinity;
-    rows.forEach((r) => { const t = r.fecha.getTime(); if (t > max) max = t; });
-    return new Date(max);
+  const dateBounds = useMemo(() => {
+    if (!rows.length) return { min: "", max: "" };
+    const toInput = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+    let minT = Infinity, maxT = -Infinity;
+    rows.forEach((r) => { const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t; });
+    return { min: toInput(minT), max: toInput(maxT) };
   }, [rows]);
+
+  useEffect(() => {
+    if (dateBounds.min && !dateFrom) setDateFrom(dateBounds.min);
+    if (dateBounds.max && !dateTo)   setDateTo(dateBounds.max);
+  }, [dateBounds.min, dateBounds.max]);
+
+  useEffect(() => { setPanelProduct(null); }, [panelClient]);
+
+  const filteredRows = useMemo(() => {
+    const from = dateFrom ? new Date(dateFrom) : null;
+    const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
+    return rows.filter((r) => {
+      if (from && r.fecha < from) return false;
+      if (to   && r.fecha > to)   return false;
+      return true;
+    });
+  }, [rows, dateFrom, dateTo]);
+
+  const refDate = useMemo(() => {
+    if (!filteredRows.length) return new Date();
+    let max = -Infinity;
+    filteredRows.forEach((r) => { const t = r.fecha.getTime(); if (t > max) max = t; });
+    return new Date(max);
+  }, [filteredRows]);
+
+  const brandMap = useMemo(() => {
+    const m = {};
+    guiasData.forEach((r) => {
+      const cliente  = col(r, "Razón Social", "Razon Social");
+      const producto = col(r, "Producto");
+      const marca    = (col(r, "Lote") || "").trim();
+      if (!cliente || !marca) return;
+      if (!m[cliente]) m[cliente] = {};
+      if (!m[cliente][producto]) m[cliente][producto] = new Set();
+      m[cliente][producto].add(marca);
+    });
+    return m;
+  }, [guiasData]);
 
   const P = useMemo(() => getPeriods(refDate), [refDate]);
 
   const clientMap = useMemo(() => {
     const m = {};
-    rows.forEach((r) => {
+    filteredRows.forEach((r) => {
       if (!r.cliente) return;
       if (!m[r.cliente]) m[r.cliente] = { rows: [], skus: new Set() };
       m[r.cliente].rows.push(r);
       if (r.producto) m[r.cliente].skus.add(r.producto);
     });
     return m;
-  }, [rows]);
+  }, [filteredRows]);
 
   const globals = useMemo(() => {
-    const f   = (a, b) => rows.filter((r) => inR(r.fecha, a, b));
+    const f   = (a, b) => filteredRows.filter((r) => inR(r.fecha, a, b));
     const r90 = f(P.roll90Start, P.today);
     const curr30 = calcP(f(P.roll30Start, P.today));
     // Previous 30-day window (days 31-60 ago)
@@ -1260,7 +1302,7 @@ const VentasTab = ({ data }) => {
       delta30V,
       delta30M,
     };
-  }, [rows, P, refDate]);
+  }, [filteredRows, P, refDate]);
 
   const summaries = useMemo(() => {
     return Object.entries(clientMap).map(([cliente, c]) => {
@@ -1380,7 +1422,8 @@ const VentasTab = ({ data }) => {
 
   return (
     <div className="space-y-5">
-      {/* Sliding detail panel */}
+
+      {/* Panel de detalle */}
       {panelDetail && (
         <DetailPanel
           title={panelDetail.cliente}
@@ -1407,6 +1450,7 @@ const VentasTab = ({ data }) => {
             <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
               <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
                 Apertura por SKU — {panelDetail.skuBreakdown.length} productos
+                <span style={{fontWeight:400,marginLeft:8,textTransform:"none"}}>· clic para ver marcas consumidas</span>
               </div>
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse"}}>
@@ -1414,16 +1458,48 @@ const VentasTab = ({ data }) => {
                     <tr><Th ch="Producto / SKU"/><Th ch="Venta Neta" right/><Th ch="Contribución" right/><Th ch="Margen %" right/></tr>
                   </thead>
                   <tbody>
-                    {panelDetail.skuBreakdown.map((s, i) => (
-                      <tr key={i} style={{borderBottom:"1px solid rgba(31,41,55,0.6)"}}>
-                        <td style={{padding:"8px 12px",fontSize:13,color:"#E5E7EB",maxWidth:260}}>
-                          <span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={s.sku}>{s.sku}</span>
-                        </td>
-                        <Td ch={"$" + fmtM(s.venta)}  right/>
-                        <Td ch={"$" + fmtM(s.contrib)} right color="text-emerald-400"/>
-                        <Td ch={fmtPct(s.margen)} right color={s.margen > 15 ? "text-emerald-300" : s.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
-                      </tr>
-                    ))}
+                    {panelDetail.skuBreakdown.map((s, i) => {
+                      const isSelected = panelProduct === s.sku;
+                      const marcas = (brandMap[panelDetail.cliente]?.[s.sku])
+                        ? Array.from(brandMap[panelDetail.cliente][s.sku]).filter(Boolean)
+                        : [];
+                      return (
+                        <React.Fragment key={i}>
+                          <tr
+                            onClick={() => setPanelProduct(isSelected ? null : s.sku)}
+                            style={{borderBottom: isSelected ? "none" : "1px solid rgba(31,41,55,0.6)", cursor:"pointer",
+                              background: isSelected ? "rgba(139,92,246,0.08)" : "transparent"}}
+                            className="hover:bg-blue-900/10 transition-colors">
+                            <td style={{padding:"8px 12px",fontSize:13,color:"#E5E7EB",maxWidth:260}}>
+                              <span style={{display:"flex",alignItems:"center",gap:6}}>
+                                <span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={s.sku}>{s.sku}</span>
+                                <span style={{fontSize:10,color: isSelected ? "#A78BFA" : "#374151",flexShrink:0}}>{isSelected ? "▲" : "▼"}</span>
+                              </span>
+                            </td>
+                            <Td ch={"$" + fmtM(s.venta)}  right/>
+                            <Td ch={"$" + fmtM(s.contrib)} right color="text-emerald-400"/>
+                            <Td ch={fmtPct(s.margen)} right color={s.margen > 15 ? "text-emerald-300" : s.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+                          </tr>
+                          {isSelected && (
+                            <tr style={{borderBottom:"1px solid rgba(31,41,55,0.6)"}}>
+                              <td colSpan={4} style={{padding:"8px 16px 12px",background:"rgba(139,92,246,0.06)"}}>
+                                <p style={{fontSize:10,color:"#6B7280",marginBottom:6,textTransform:"uppercase",letterSpacing:"0.05em"}}>Marcas consumidas</p>
+                                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                                  {marcas.length > 0
+                                    ? marcas.map((m) => (
+                                        <span key={m} style={{fontSize:11,padding:"3px 9px",borderRadius:99,background:"rgba(139,92,246,0.12)",color:"#A78BFA",border:"1px solid rgba(139,92,246,0.25)"}}>
+                                          {m}
+                                        </span>
+                                      ))
+                                    : <span style={{fontSize:11,color:"#374151",fontStyle:"italic"}}>Sin registros en guías de despacho</span>
+                                  }
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1434,7 +1510,7 @@ const VentasTab = ({ data }) => {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        <Card label="Venta Trim. Cal."    value={"$" + fmtM(globals.quarter.venta)}   sub={rows.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300" delta={globals.delta30V} />
+        <Card label="Venta Trim. Cal."    value={"$" + fmtM(globals.quarter.venta)}   sub={filteredRows.length.toLocaleString("es-CL") + " líneas"} color="text-blue-300" delta={globals.delta30V} />
         <Card label="Contrib. Trim. Cal." value={"$" + fmtM(globals.quarter.contrib)} sub={"Margen: " + fmtPct(globals.quarter.margen)} color="text-emerald-300" />
         <Card label="Margen % 90 días"    value={fmtPct(globals.roll90.margen)}        sub={"Contrib: $" + fmtM(globals.roll90.contrib)} color="text-yellow-300" />
         <Card label="SKUs únicos 90 días" value={globals.roll90.skus}                  sub="Productos distintos" color="text-pink-300" />
@@ -1500,6 +1576,28 @@ const VentasTab = ({ data }) => {
 
       {/* Search + metric */}
       <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex gap-2 items-end shrink-0">
+          <div>
+            <p className="text-xs mb-1" style={{color:"#444458"}}>Desde</p>
+            <input type="date" value={dateFrom} min={dateBounds.min} max={dateBounds.max}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="px-2.5 py-2 rounded-lg text-sm"
+              style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+              onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+              onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
+          </div>
+          <div>
+            <p className="text-xs mb-1" style={{color:"#444458"}}>Hasta</p>
+            <input type="date" value={dateTo} min={dateBounds.min} max={dateBounds.max}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="px-2.5 py-2 rounded-lg text-sm"
+              style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+              onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+              onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
+          </div>
+          <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
+            className="text-xs text-gray-600 hover:text-blue-400 transition-colors pb-2.5">Restablecer</button>
+        </div>
         <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar cliente…"/>
         <div className="flex gap-1 shrink-0 p-1 rounded-xl" style={{background:"#0F0F16",border:"1px solid #1a1a28"}}>
           {[["venta","Venta Neta"],["contrib","Contribución"],["margen","Margen %"]].map(([k,l]) => (
@@ -1550,6 +1648,7 @@ const VentasTab = ({ data }) => {
         </div>
         <Pager page={page} totalPages={totalPages} go={go} total={total}/>
       </div>
+
     </div>
   );
 };
@@ -1848,9 +1947,11 @@ const ComprasTab = ({ data, ventasData = [] }) => {
   const [search,        setSearch]        = useState("");
   const [panelSupplier, setPanelSupplier] = useState(null);
   const [modalFolio,    setModalFolio]    = useState(null);
+  const [dateFrom,      setDateFrom]      = useState("");
+  const [dateTo,        setDateTo]        = useState("");
   const compSort = useSort("totalC", "desc");
 
-  const rows = useMemo(() =>
+  const allRows = useMemo(() =>
     data.map((r) => ({
       proveedor: col(r, "Razón Social", "Razon Social"),
       fecha:     parseDate(col(r, "Fecha")),
@@ -1861,6 +1962,42 @@ const ComprasTab = ({ data, ventasData = [] }) => {
       folio:     col(r, "Folio"),
     })).filter((r) => r.proveedor),
   [data]);
+
+  const dateBounds = useMemo(() => {
+    if (!allRows.length) return { min: "", max: "" };
+    const toInput = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+    let minT = Infinity, maxT = -Infinity;
+    allRows.forEach((r) => { if (!r.fecha) return; const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t; });
+    return isFinite(minT) ? { min: toInput(minT), max: toInput(maxT) } : { min: "", max: "" };
+  }, [allRows]);
+
+  useEffect(() => {
+    if (dateBounds.min && !dateFrom) setDateFrom(dateBounds.min);
+    if (dateBounds.max && !dateTo)   setDateTo(dateBounds.max);
+  }, [dateBounds.min, dateBounds.max]);
+
+  const rows = useMemo(() => {
+    const from = dateFrom ? new Date(dateFrom) : null;
+    const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
+    return allRows.filter((r) => {
+      if (!r.fecha) return true;
+      if (from && r.fecha < from) return false;
+      if (to   && r.fecha > to)   return false;
+      return true;
+    });
+  }, [allRows, dateFrom, dateTo]);
+
+  // Evolución mensual de compras
+  const monthlyTrend = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => {
+      if (!r.fecha) return;
+      const key = `${r.fecha.getFullYear()}-${String(r.fecha.getMonth()+1).padStart(2,"0")}`;
+      if (!map[key]) map[key] = { label: key, total: 0 };
+      map[key].total += r.total;
+    });
+    return Object.values(map).sort((a, b) => a.label.localeCompare(b.label)).slice(-18);
+  }, [rows]);
 
   const supplierSummary = useMemo(() => {
     const map = {};
@@ -1898,6 +2035,19 @@ const ComprasTab = ({ data, ventasData = [] }) => {
   const panelRows = useMemo(() => {
     if (!panelSupplier) return [];
     return [...panelSupplier.rows].sort((a, b) => (b.fecha?.getTime() ?? 0) - (a.fecha?.getTime() ?? 0));
+  }, [panelSupplier]);
+
+  const panelMonthlyTrend = useMemo(() => {
+    if (!panelSupplier) return [];
+    const cutoff = new Date(Date.now() - 89 * 86400000);
+    const map = {};
+    panelSupplier.rows.forEach((r) => {
+      if (!r.fecha || r.fecha < cutoff) return;
+      const key = `${r.fecha.getFullYear()}-${String(r.fecha.getMonth()+1).padStart(2,"0")}`;
+      if (!map[key]) map[key] = { label: key, total: 0 };
+      map[key].total += r.total;
+    });
+    return Object.values(map).sort((a, b) => a.label.localeCompare(b.label));
   }, [panelSupplier]);
 
   const panelProductGroups = useMemo(() => {
@@ -1963,6 +2113,37 @@ const ComprasTab = ({ data, ventasData = [] }) => {
               <Card label="Cantidad Total"       value={fmt(panelSupplier.totalQ, 2)}     color="text-blue-300" sub="kg / unid."/>
               <Card label="Productos Distintos"  value={panelSupplier.prods}               color="text-emerald-300"/>
             </div>
+
+            {/* Evolución mensual últimos 90 días */}
+            {panelMonthlyTrend.length > 0 && (
+              <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,padding:"12px 16px"}}>
+                <p style={{fontSize:11,fontWeight:600,color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:12}}>
+                  Compras últimos 90 días
+                </p>
+                {(() => {
+                  const maxVal = Math.max(...panelMonthlyTrend.map(m => m.total), 1);
+                  return (
+                    <div style={{display:"flex",alignItems:"flex-end",gap:6,height:80}}>
+                      {panelMonthlyTrend.map((m) => {
+                        const h = Math.max((m.total / maxVal) * 68, 4);
+                        const [yr, mo] = m.label.split("-");
+                        const moLabel = new Date(+yr, +mo-1).toLocaleString("es-CL", {month:"short"});
+                        return (
+                          <div key={m.label} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                            <span style={{fontSize:9,color:"#9CA3AF",whiteSpace:"nowrap"}}>${fmtM(m.total)}</span>
+                            <div title={`${m.label}: $${fmtM(m.total)}`}
+                              style={{width:"100%",height:h,background:"rgba(139,92,246,0.55)",borderRadius:"3px 3px 0 0",
+                                border:"1px solid rgba(139,92,246,0.8)"}}/>
+                            <span style={{fontSize:9,color:"#6B7280",whiteSpace:"nowrap"}}>{moLabel}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
             <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
               <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,
                 color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
@@ -2004,15 +2185,64 @@ const ComprasTab = ({ data, ventasData = [] }) => {
 
       {/* Header KPIs */}
       <div className="grid grid-cols-3 gap-3">
-        <Card label="Proveedores"    value={globalStats.totalProveedores}                     color="text-purple-300" sub="Activos registrados"/>
+        <Card label="Proveedores"    value={globalStats.totalProveedores}                     color="text-purple-300" sub="En período seleccionado"/>
         <Card label="Total Comprado" value={"$" + fmtM(globalStats.totalC)}                  color="text-white"/>
         <Card label="Total Líneas"   value={globalStats.totalLineas.toLocaleString("es-CL")} color="text-blue-300"/>
       </div>
 
-      {/* Search */}
-      <div className="flex items-center gap-3">
+      {/* Evolución mensual */}
+      {monthlyTrend.length > 1 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Evolución mensual de compras</p>
+          {(() => {
+            const maxVal = Math.max(...monthlyTrend.map(m => m.total), 1);
+            return (
+              <div style={{display:"flex",alignItems:"flex-end",gap:4,height:80}}>
+                {monthlyTrend.map((m) => {
+                  const h = Math.max((m.total / maxVal) * 72, 4);
+                  const [yr, mo] = m.label.split("-");
+                  const moLabel = new Date(+yr, +mo-1).toLocaleString("es-CL", {month:"short"});
+                  return (
+                    <div key={m.label} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                      <span style={{fontSize:9,color:"#6B7280",whiteSpace:"nowrap"}}>${fmtM(m.total)}</span>
+                      <div title={`${m.label}: $${fmtM(m.total)}`}
+                        style={{width:"100%",height:h,background:"rgba(139,92,246,0.55)",borderRadius:"3px 3px 0 0",
+                          border:"1px solid rgba(139,92,246,0.8)",cursor:"default",transition:"height 0.2s"}}/>
+                      <span style={{fontSize:9,color:"#6B7280",whiteSpace:"nowrap"}}>{moLabel}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Search + fecha */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex gap-2 items-end shrink-0">
+          <div>
+            <p className="text-xs mb-1" style={{color:"#444458"}}>Desde</p>
+            <input type="date" value={dateFrom} min={dateBounds.min} max={dateBounds.max}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="px-2.5 py-2 rounded-lg text-sm"
+              style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+              onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+              onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
+          </div>
+          <div>
+            <p className="text-xs mb-1" style={{color:"#444458"}}>Hasta</p>
+            <input type="date" value={dateTo} min={dateBounds.min} max={dateBounds.max}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="px-2.5 py-2 rounded-lg text-sm"
+              style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+              onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+              onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
+          </div>
+          <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
+            className="text-xs text-gray-600 hover:text-blue-400 transition-colors pb-2.5">Restablecer</button>
+        </div>
         <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar por proveedor o producto…"/>
-        <span className="text-xs text-gray-500 shrink-0 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2">Búsqueda dual</span>
         <button onClick={handleExportCompras}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all shrink-0"
           style={{background:"rgba(16,185,129,0.12)",color:"#34D399",border:"1px solid rgba(16,185,129,0.25)"}}>
@@ -2218,11 +2448,12 @@ const parseSheetGrid = (grid, provider, category, fileId) => {
 
 // pendingFiles = { files: File[], version: number }
 // Cada vez que version sube, PreciosTab procesa los nuevos archivos
-const PreciosTab = ({ pendingFiles, allRows, setAllRows, fileCards, setFileCards }) => {
-  const [loading,   setLoading]   = useState(false);
-  const [search,    setSearch]    = useState("");
-  const [catFilter, setCatFilter] = useState("Todos");
-  const [dragging,  setDragging]  = useState(false);
+const PreciosTab = ({ pendingFiles, allRows, setAllRows, fileCards, setFileCards, comprasData = [] }) => {
+  const [loading,      setLoading]      = useState(false);
+  const [search,       setSearch]       = useState("");
+  const [catFilter,    setCatFilter]    = useState("Todos");
+  const [dragging,     setDragging]     = useState(false);
+  const [panelProduct, setPanelProduct] = useState(null);
   const uploadRef  = useRef();
   const priceSort  = useSort("precio", "asc");
   const lastVersion = useRef(-1);
@@ -2343,8 +2574,96 @@ const PreciosTab = ({ pendingFiles, allRows, setAllRows, fileCards, setFileCards
   const proveedoresCount = new Set(filtered.map((r) => r.proveedor)).size;
   const gruposCount      = new Set(filtered.map((r) => r.groupKey)).size;
 
+  // Panel: precios actuales + historial de compras para el producto seleccionado
+  const panelData = useMemo(() => {
+    if (!panelProduct) return null;
+    // Filas de la lista de precios para ese grupo
+    const priceRows = allRows
+      .filter((r) => r.groupKey === panelProduct)
+      .sort((a, b) => a.precio - b.precio);
+    const productLabel = priceRows[0]?.productoOriginal || panelProduct;
+    // Historial desde compras: busca coincidencia por nombre normalizado
+    const comprasHistory = [];
+    comprasData.forEach((r) => {
+      const prod    = col(r, "Concepto / Artículo", "Concepto / Articulo", "Concepto/Artículo", "Producto");
+      const precio  = parseNum(col(r, "Precio Un."));
+      const fecha   = parseDate(col(r, "Fecha"));
+      if (!prod || !precio || !fecha) return;
+      const prodNorm = normStr(prod);
+      if (prodNorm.includes(panelProduct) || panelProduct.includes(prodNorm.split(" ").slice(0,3).join(" "))) {
+        comprasHistory.push({ fecha, precio, prod });
+      }
+    });
+    comprasHistory.sort((a, b) => a.fecha - b.fecha);
+    return { productLabel, priceRows, comprasHistory };
+  }, [panelProduct, allRows, comprasData]);
+
   return (
     <div className="space-y-5">
+
+      {/* ── PANEL HISTORIAL PRODUCTO ─────────────── */}
+      {panelData && (
+        <DetailPanel
+          title={panelData.productLabel}
+          subtitle={`${panelData.priceRows.length} proveedor${panelData.priceRows.length !== 1 ? "es" : ""} · ${panelData.comprasHistory.length} compras registradas`}
+          onClose={() => setPanelProduct(null)}>
+          <div className="space-y-4">
+            {/* Precios actuales por proveedor */}
+            <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
+              <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                Precios actuales en lista
+              </div>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead style={{background:"#1f2937"}}>
+                  <tr><Th ch="Proveedor"/><Th ch="Marca / Atributo"/><Th ch="Precio Unit." right/></tr>
+                </thead>
+                <tbody>
+                  {panelData.priceRows.map((r, i) => (
+                    <tr key={i} style={{borderBottom:"1px solid rgba(31,41,55,0.6)",background: i===0 ? "rgba(16,185,129,0.05)" : "transparent"}}>
+                      <td style={{padding:"8px 12px",fontSize:13,color: i===0 ? "#34D399" : "#E5E7EB",fontWeight: i===0 ? 600 : 400}}>
+                        {r.proveedor} {i===0 && <span style={{fontSize:10,marginLeft:6,color:"#10B981"}}>mejor precio</span>}
+                      </td>
+                      <td style={{padding:"8px 12px",fontSize:12,color:"#9CA3AF"}}>{r.atributo || "—"}</td>
+                      <td style={{padding:"8px 12px",fontSize:13,textAlign:"right",fontWeight:600,color: i===0 ? "#34D399" : "#E5E7EB"}}>${fmtM(r.precio)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Historial de compras reales */}
+            {panelData.comprasHistory.length > 0 ? (
+              <div style={{background:"#111827",border:"1px solid #374151",borderRadius:12,overflow:"hidden"}}>
+                <div style={{padding:"10px 16px",borderBottom:"1px solid #374151",fontSize:11,fontWeight:600,color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                  Historial de precios pagados en compras
+                </div>
+                {panelData.comprasHistory.length >= 2 && (
+                  <div style={{padding:"12px 16px 4px"}}>
+                    <SvgSparkline history={panelData.comprasHistory.map(h => ({ fecha: h.fecha, p: h.precio }))}/>
+                  </div>
+                )}
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead style={{background:"#1f2937"}}>
+                    <tr><Th ch="Fecha"/><Th ch="Precio Pagado" right/></tr>
+                  </thead>
+                  <tbody>
+                    {[...panelData.comprasHistory].reverse().slice(0, 10).map((h, i) => (
+                      <tr key={i} style={{borderBottom:"1px solid rgba(31,41,55,0.6)"}}>
+                        <td style={{padding:"7px 12px",fontSize:12,color:"#9CA3AF"}}>{fmtDate(h.fecha)}</td>
+                        <td style={{padding:"7px 12px",fontSize:13,textAlign:"right",fontWeight:600,color:"#A78BFA"}}>${fmtM(h.precio)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={{fontSize:12,color:"#374151",fontStyle:"italic",textAlign:"center",padding:"12px 0"}}>
+                Sin registros de compra para este producto
+              </p>
+            )}
+          </div>
+        </DetailPanel>
+      )}
 
       {/* ── UPLOAD ZONE ─────────────────────────── */}
       <div
@@ -2471,6 +2790,8 @@ const PreciosTab = ({ pendingFiles, allRows, setAllRows, fileCards, setFileCards
                     ? Math.round((1 - r.precio / avg) * 100) : 0;
                   return (
                     <tr key={r.uid}
+                      onClick={() => setPanelProduct(r.groupKey)}
+                      style={{cursor:"pointer"}}
                       className={`transition-colors ${
                         isBest ? "bg-emerald-950/25 hover:bg-emerald-950/35" : "hover:bg-gray-800/20"
                       }`}>
@@ -2587,10 +2908,11 @@ class ProductosErrorBoundary extends React.Component {
 }
 
 const ProductosTab = ({ data }) => {
-  const [search,       setSearch]       = useState("");
-  const [dateFrom,     setDateFrom]     = useState("");
-  const [dateTo,       setDateTo]       = useState("");
-  const [panelProduct, setPanelProduct] = useState(null);
+  const [search,        setSearch]        = useState("");
+  const [clientFilter,  setClientFilter]  = useState("");
+  const [dateFrom,      setDateFrom]      = useState("");
+  const [dateTo,        setDateTo]        = useState("");
+  const [panelProduct,  setPanelProduct]  = useState(null);
   const prodSort = useSort("venta", "desc");
 
   const rows = useMemo(() =>
@@ -2621,15 +2943,22 @@ const ProductosTab = ({ data }) => {
     if (dateBounds.max && !dateTo)   setDateTo(dateBounds.max);
   }, [dateBounds.min, dateBounds.max]);
 
+  const clientList = useMemo(() => {
+    const set = new Set(rows.map((r) => r.cliente).filter(Boolean));
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "es"));
+  }, [rows]);
+
   const filteredRows = useMemo(() => {
     const from = dateFrom ? new Date(dateFrom) : null;
     const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
+    const cli  = clientFilter.trim() ? normStr(clientFilter) : null;
     return rows.filter((r) => {
       if (from && r.fecha < from) return false;
       if (to   && r.fecha > to)   return false;
+      if (cli  && !normStr(r.cliente || "").includes(cli)) return false;
       return true;
     });
-  }, [rows, dateFrom, dateTo]);
+  }, [rows, dateFrom, dateTo, clientFilter]);
 
   const productSummary = useMemo(() => {
     const map = {};
@@ -2671,6 +3000,13 @@ const ProductosTab = ({ data }) => {
     const q = normStr(search);
     return productSummary.filter((p) => normStr(p.producto).includes(q));
   }, [productSummary, search]);
+
+  const subtotals = useMemo(() => ({
+    venta:   filteredProducts.reduce((s, p) => s + p.venta,   0),
+    contrib: filteredProducts.reduce((s, p) => s + p.contrib, 0),
+    cantidad:filteredProducts.reduce((s, p) => s + p.cantidad,0),
+    get margen() { return this.venta > 0 ? (this.contrib / this.venta) * 100 : 0; },
+  }), [filteredProducts]);
 
   const sortedProducts = useMemo(() =>
     applySort(filteredProducts, prodSort.key, prodSort.dir, (p, k) => {
@@ -2816,12 +3152,40 @@ const ProductosTab = ({ data }) => {
               onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
               onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
           </div>
-          <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
+          <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); setClientFilter(""); setSearch(""); go(0); }}
             className="text-xs text-gray-600 hover:text-blue-400 transition-colors pb-2.5">Restablecer</button>
         </div>
         <div className="flex-1 min-w-[200px]">
           <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar producto…"/>
         </div>
+        <div style={{minWidth:180}}>
+          <p className="text-xs mb-1" style={{color:"#444458"}}>Cliente</p>
+          <select value={clientFilter} onChange={(e) => { setClientFilter(e.target.value); go(0); }}
+            style={{background:"#0F0F16",border:"1px solid #21212E",borderRadius:8,color: clientFilter ? "#E5E7EB" : "#6B7280",
+              padding:"7px 10px",fontSize:13,width:"100%",outline:"none"}}>
+            <option value="">Todos los clientes</option>
+            {clientList.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Subtotals bar */}
+      <div style={{display:"flex",gap:0,background:"#0F0F16",border:"1px solid #21212E",borderRadius:10,overflow:"hidden"}}>
+        {[
+          { label: "Productos filtrados", value: String(filteredProducts.length), color: "#93C5FD" },
+          { label: "Venta neta",          value: "$" + fmtM(subtotals.venta),    color: "#E5E7EB" },
+          { label: "Contribución",        value: "$" + fmtM(subtotals.contrib),  color: "#6EE7B7" },
+          { label: "Margen %",            value: fmtPct(subtotals.margen),
+            color: subtotals.margen > 15 ? "#6EE7B7" : subtotals.margen > 0 ? "#FDE68A" : "#FCA5A5" },
+          { label: "Cantidad total",      value: fmt(subtotals.cantidad, 1),     color: "#D1D5DB" },
+        ].map((s, i, arr) => (
+          <div key={i} style={{flex:1,padding:"8px 14px",
+            borderRight: i < arr.length - 1 ? "1px solid #21212E" : "none",
+            textAlign: i === 0 ? "left" : "center"}}>
+            <p style={{fontSize:10,color:"#6B7280",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:2}}>{s.label}</p>
+            <p style={{fontSize:14,fontWeight:700,color:s.color}}>{s.value}</p>
+          </div>
+        ))}
       </div>
 
       {/* Products table */}
@@ -2975,6 +3339,64 @@ const ResumenTab = ({ ventasData, guiasData, comprasData }) => {
       .slice(0, 4),
   [supplierMap]);
 
+  // Top 5 productos por venta total
+  const topProductos = useMemo(() => {
+    const m = {};
+    ventasRows.forEach(r => {
+      if (!r.producto) return;
+      if (!m[r.producto]) m[r.producto] = { producto: r.producto, venta: 0, contrib: 0, clientes: new Set() };
+      m[r.producto].venta   += r.venta;
+      m[r.producto].contrib += r.contrib;
+      if (r.cliente) m[r.producto].clientes.add(r.cliente);
+    });
+    return Object.values(m)
+      .map(p => ({ ...p, margen: p.venta > 0 ? (p.contrib / p.venta) * 100 : 0, clientes: p.clientes.size }))
+      .sort((a, b) => b.venta - a.venta)
+      .slice(0, 5);
+  }, [ventasRows]);
+
+  const totalVentaProductos = topProductos.reduce((s, p) => s + p.venta, 0);
+
+  // Stock crítico — lee stockActual de localStorage y cruza con demanda de guías
+  const stockCritico = useMemo(() => {
+    let stockActual = {};
+    try { stockActual = JSON.parse(localStorage.getItem("gp_inv_stock_v1") || "{}"); } catch {}
+
+    const sourceData = guiasData.length > 0 ? guiasData : ventasData;
+    if (!sourceData.length) return [];
+
+    // Build quick SKU demand from all source rows
+    const skuMap = {};
+    sourceData.forEach(r => {
+      const prod     = col(r, "Producto");
+      const fecha    = parseDate(col(r, "Fecha"));
+      const cantidad = parseNum(col(r, "Cantidad"));
+      if (!prod || !fecha || !cantidad) return;
+      if (!skuMap[prod]) skuMap[prod] = { events: [], minT: Infinity, maxT: -Infinity };
+      skuMap[prod].events.push(cantidad);
+      const t = fecha.getTime();
+      if (t < skuMap[prod].minT) skuMap[prod].minT = t;
+      if (t > skuMap[prod].maxT) skuMap[prod].maxT = t;
+    });
+
+    const alerts = [];
+    Object.entries(skuMap).forEach(([prod, d]) => {
+      const stock = parseFloat(stockActual[prod] || "") || 0;
+      if (stock <= 0) return; // no stock ingresado — no alertar
+      const totalDaysProd = Math.max(1, Math.round((d.maxT - d.minT) / 86400000));
+      const sortedQty  = [...d.events].sort((a, b) => a - b);
+      const medianQty  = sortedQty[Math.floor(sortedQty.length / 2)] || 1;
+      const threshold  = medianQty * 3;
+      const baseQty    = d.events.filter(q => q <= threshold).reduce((s, q) => s + q, 0);
+      const daily      = totalDaysProd > 0 ? baseQty / totalDaysProd : 0;
+      if (daily <= 0) return;
+      const dias = Math.round(stock / daily);
+      if (dias < 7) alerts.push({ prod, dias, stock, daily });
+    });
+
+    return alerts.sort((a, b) => a.dias - b.dias).slice(0, 8);
+  }, [guiasData, ventasData]);
+
   // Alerts
   const alerts = useMemo(() => {
     const list = [];
@@ -3087,24 +3509,98 @@ const ResumenTab = ({ ventasData, guiasData, comprasData }) => {
         </div>
       )}
 
-      {/* Section 3: Alertas */}
-      {alerts.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-xs font-semibold uppercase tracking-widest" style={{color:"#555570"}}>Alertas</p>
-          {alerts.map((a, i) => (
-            <div key={i} className="flex items-start gap-3 px-4 py-3 rounded-xl text-sm"
-              style={{
-                background: a.type === "red" ? "rgba(239,68,68,0.07)" : "rgba(245,158,11,0.07)",
-                borderLeft: `3px solid ${a.type === "red" ? "#EF4444" : "#F59E0B"}`,
-                border: `1px solid ${a.type === "red" ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`,
-                borderLeftWidth: 3,
-              }}>
-              <span style={{color: a.type === "red" ? "#F87171" : "#FBBF24", flexShrink:0}}>
-                {a.type === "red" ? "⚠" : "↓"}
-              </span>
-              <span style={{color: a.type === "red" ? "#FECACA" : "#FDE68A"}}>{a.msg}</span>
-            </div>
-          ))}
+      {/* Section 3: Top 5 Productos */}
+      {topProductos.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+            <TrendingUp size={15} className="text-blue-400" />
+            <span className="font-semibold text-white text-sm">Top 5 Productos</span>
+            <span className="text-xs text-gray-600 ml-1">— por venta total</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/60">
+                <tr>
+                  <Th ch="Producto"/>
+                  <Th ch="Venta" right/>
+                  <Th ch="% total" right/>
+                  <Th ch="Margen %" right/>
+                  <Th ch="Clientes" right/>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/60">
+                {topProductos.map((p, i) => {
+                  const pct = totalVentaProductos > 0 ? (p.venta / totalVentaProductos) * 100 : 0;
+                  return (
+                    <tr key={p.producto} className="hover:bg-blue-900/20 transition-colors">
+                      <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[240px]">
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span style={{fontSize:11,fontWeight:700,color:"#4B5563",minWidth:16}}>{i+1}</span>
+                          <span className="block truncate" title={p.producto}>{p.producto}</span>
+                        </div>
+                      </td>
+                      <Td ch={"$" + fmtM(p.venta)} right bold/>
+                      <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>
+                          <div style={{width:60,height:4,borderRadius:99,background:"#1f2937",overflow:"hidden"}}>
+                            <div style={{width:`${Math.min(100,pct)}%`,height:"100%",background:"#3B82F6",borderRadius:99}}/>
+                          </div>
+                          <span style={{fontSize:12,color:"#93C5FD",minWidth:36}}>{fmt(pct,1)}%</span>
+                        </div>
+                      </td>
+                      <Td ch={fmtPct(p.margen)} right
+                        color={p.margen > 15 ? "text-emerald-300" : p.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
+                      <Td ch={p.clientes} right dim/>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Section 4: Alerta stock crítico */}
+      {stockCritico.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+            <AlertTriangle size={15} className="text-red-400" />
+            <span className="font-semibold text-white text-sm">Stock Crítico</span>
+            <span className="text-xs text-gray-600 ml-1">— productos con menos de 7 días de cobertura (según stock ingresado en Inventario)</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/60">
+                <tr>
+                  <Th ch="Producto"/>
+                  <Th ch="Stock actual" right/>
+                  <Th ch="Demanda/día" right/>
+                  <Th ch="Días cobertura" right/>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/60">
+                {stockCritico.map((s) => (
+                  <tr key={s.prod} className="hover:bg-red-900/10 transition-colors">
+                    <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[240px]">
+                      <span className="block truncate" title={s.prod}>{s.prod}</span>
+                    </td>
+                    <Td ch={fmt(s.stock, 1)} right color="text-gray-300"/>
+                    <Td ch={fmt(s.daily, 1) + "/d"} right color="text-yellow-300"/>
+                    <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                      <span style={{
+                        fontSize:12, padding:"2px 10px", borderRadius:99, fontWeight:700,
+                        background: s.dias <= 0 ? "rgba(239,68,68,0.2)" : "rgba(239,68,68,0.12)",
+                        color: "#F87171",
+                        border: "1px solid rgba(239,68,68,0.3)"
+                      }}>
+                        {s.dias <= 0 ? "Agotado" : `${s.dias}d`}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -3178,15 +3674,79 @@ const InventarioTab = ({ guiasData, ventasData }) => {
     })).filter(r => r.fecha && r.producto && r.cliente),
   [sourceData]);
 
-  // Derive date range from actual data
-  const { refDate, totalDays } = useMemo(() => {
-    if (!rows.length) return { refDate: new Date(), totalDays: 90 };
+  // Date bounds from raw data
+  const dateBounds = useMemo(() => {
+    if (!rows.length) return { min: "", max: "" };
     let minT = Infinity, maxT = -Infinity;
     rows.forEach(r => { const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t; });
+    const toInput = t => new Date(t).toISOString().slice(0, 10);
+    return { min: toInput(minT), max: toInput(maxT) };
+  }, [rows]);
+
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo,   setDateTo]   = useState("");
+
+  useEffect(() => {
+    if (dateBounds.min && !dateFrom) setDateFrom(dateBounds.min);
+    if (dateBounds.max && !dateTo)   setDateTo(dateBounds.max);
+  }, [dateBounds.min, dateBounds.max]);
+
+  const filteredRows = useMemo(() => {
+    const from = dateFrom ? new Date(dateFrom) : null;
+    const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
+    return rows.filter(r => {
+      if (from && r.fecha < from) return false;
+      if (to   && r.fecha > to)   return false;
+      return true;
+    });
+  }, [rows, dateFrom, dateTo]);
+
+  // Stock actual por producto (persisted)
+  const [stockActual, setStockActual] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("gp_inv_stock_v1") || "{}"); }
+    catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("gp_inv_stock_v1", JSON.stringify(stockActual)); }
+    catch {}
+  }, [stockActual]);
+
+  // Manual calzada overrides: producto → Set of eventKeys ("fecha_cliente_qty") marked as normal
+  const [manualNormal, setManualNormal] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("gp_inv_normal_v1") || "{}");
+      const m = {};
+      Object.keys(raw).forEach(k => { m[k] = new Set(raw[k]); });
+      return m;
+    } catch { return {}; }
+  });
+  useEffect(() => {
+    try {
+      const raw = {};
+      Object.keys(manualNormal).forEach(k => { raw[k] = Array.from(manualNormal[k]); });
+      localStorage.setItem("gp_inv_normal_v1", JSON.stringify(raw));
+    } catch {}
+  }, [manualNormal]);
+
+  const toggleManualNormal = (producto, eventKey) => {
+    setManualNormal(prev => {
+      const next = { ...prev };
+      const set  = new Set(next[producto] || []);
+      set.has(eventKey) ? set.delete(eventKey) : set.add(eventKey);
+      next[producto] = set;
+      return next;
+    });
+  };
+
+  // Derive date range from filtered data
+  const { refDate, totalDays } = useMemo(() => {
+    if (!filteredRows.length) return { refDate: new Date(), totalDays: 90 };
+    let minT = Infinity, maxT = -Infinity;
+    filteredRows.forEach(r => { const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t; });
     const rDate = new Date(maxT);
     const days  = Math.max(1, Math.round((maxT - minT) / 86400000));
     return { refDate: rDate, totalDays: days };
-  }, [rows]);
+  }, [filteredRows]);
   const totalWeeks = totalDays / 7;
 
   // Core SKU analysis — framework 7/15/21 + detección de ventas calzadas
@@ -3196,11 +3756,10 @@ const InventarioTab = ({ guiasData, ventasData }) => {
   const DIAS_MAX  = 21;
 
   const skuAnalysis = useMemo(() => {
-    if (!rows.length) return [];
+    if (!filteredRows.length) return [];
 
-    // Agrupar eventos por producto
     const skuMap = {};
-    rows.forEach(r => {
+    filteredRows.forEach(r => {
       const k = r.producto;
       if (!skuMap[k]) skuMap[k] = { producto: k, events: [], clientSet: new Set() };
       skuMap[k].events.push({ fecha: r.fecha, cliente: r.cliente, cantidad: r.cantidad || 1, precio: r.precio || 0 });
@@ -3208,8 +3767,9 @@ const InventarioTab = ({ guiasData, ventasData }) => {
     });
 
     return Object.values(skuMap).map(sku => {
-      const events       = [...sku.events].sort((a, b) => a.fecha - b.fecha);
+      const events        = [...sku.events].sort((a, b) => a.fecha - b.fecha);
       const uniqueClients = sku.clientSet.size;
+      const prodNormal    = manualNormal[sku.producto] || new Set();
 
       // Clientes con compra en ≥2 meses distintos
       let consistentClients = 0;
@@ -3221,19 +3781,18 @@ const InventarioTab = ({ guiasData, ventasData }) => {
         if (months.size >= 2) consistentClients++;
       });
 
-      // ── Detección de ventas calzadas por volumen (3× mediana) ────────
+      // ── Detección de ventas calzadas (3× mediana) + overrides manuales ─
       const sortedQty = [...events.map(e => e.cantidad)].sort((a, b) => a - b);
       const medianQty = sortedQty[Math.floor(sortedQty.length / 2)] || 1;
       const calzadaThreshold = medianQty * CALZADA_MULT;
 
-      const normalEvents  = events.filter(e => e.cantidad <= calzadaThreshold);
-      const calzadaEvents = events.filter(e => e.cantidad >  calzadaThreshold);
+      const evKey = e => `${e.fecha.toISOString().slice(0,10)}_${e.cliente}_${e.cantidad}`;
+
+      // Auto-calzada si supera umbral Y no marcado manualmente como normal
+      const calzadaEvents = events.filter(e => e.cantidad > calzadaThreshold && !prodNormal.has(evKey(e)));
+      const normalEvents  = events.filter(e => e.cantidad <= calzadaThreshold || prodNormal.has(evKey(e)));
       const calzadaQty    = calzadaEvents.reduce((s, e) => s + e.cantidad, 0);
 
-      // ── Clasificación del SKU ─────────────────────────────────────────
-      // BASE FIJA:  ≥3 clientes únicos, ≥2 consistentes, ≥8 eventos
-      // CALZADO:    ≤1 cliente o ≤2 eventos
-      // HÍBRIDO:    intermedio
       let tipo;
       if (uniqueClients >= 3 && consistentClients >= 2 && events.length >= 8) {
         tipo = 'base';
@@ -3243,8 +3802,7 @@ const InventarioTab = ({ guiasData, ventasData }) => {
         tipo = 'hibrido';
       }
 
-      // ── Demanda base (excluye calzadas) y targets de stock ───────────
-      const baseQty        = normalEvents.reduce((s, e) => s + e.cantidad, 0);
+      const baseQty         = normalEvents.reduce((s, e) => s + e.cantidad, 0);
       const baseDailyDemand = totalDays > 0 ? baseQty / totalDays : 0;
 
       const stockMin = tipo !== 'calzado' ? Math.ceil(baseDailyDemand * DIAS_MIN) : 0;
@@ -3255,11 +3813,12 @@ const InventarioTab = ({ guiasData, ventasData }) => {
         producto: sku.producto,
         uniqueClients,
         consistentClients,
-        eventos:          events.length,
-        eventosBase:      normalEvents.length,
-        calzadaCount:     calzadaEvents.length,
+        eventos:      events.length,
+        eventosBase:  normalEvents.length,
+        calzadaCount: calzadaEvents.length,
         calzadaQty,
-        calzadaEvents,        // full list for detail modal
+        calzadaEvents,
+        allEvents: events,      // needed for modal with overrides
         medianQty,
         calzadaThreshold,
         baseDailyDemand,
@@ -3273,7 +3832,7 @@ const InventarioTab = ({ guiasData, ventasData }) => {
       if (order[a.tipo] !== order[b.tipo]) return order[a.tipo] - order[b.tipo];
       return b.stockObj - a.stockObj;
     });
-  }, [rows, totalDays]);
+  }, [filteredRows, totalDays, manualNormal]);
 
   const [filter, setFilter] = useState('todos'); // 'todos'|'base'|'hibrido'|'calzado'
   const [search, setSearch] = useState('');
@@ -3303,6 +3862,33 @@ const InventarioTab = ({ guiasData, ventasData }) => {
 
   return (
     <div className="space-y-4">
+      {/* ── Date filter ── */}
+      <div className="flex gap-2 items-end flex-wrap">
+        <div>
+          <p className="text-xs mb-1" style={{color:"#444458"}}>Desde</p>
+          <input type="date" value={dateFrom} min={dateBounds.min} max={dateBounds.max}
+            onChange={e => setDateFrom(e.target.value)}
+            className="px-2.5 py-2 rounded-lg text-sm"
+            style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+            onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+            onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
+        </div>
+        <div>
+          <p className="text-xs mb-1" style={{color:"#444458"}}>Hasta</p>
+          <input type="date" value={dateTo} min={dateBounds.min} max={dateBounds.max}
+            onChange={e => setDateTo(e.target.value)}
+            className="px-2.5 py-2 rounded-lg text-sm"
+            style={{background:"#0F0F16",border:"1px solid #21212E",outline:"none",color:"#E5E7EB"}}
+            onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+            onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
+        </div>
+        <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); }}
+          className="text-xs text-gray-600 hover:text-blue-400 transition-colors pb-2.5">Restablecer</button>
+        <span className="text-xs pb-2.5" style={{color:"#444458"}}>
+          · {filteredRows.length.toLocaleString("es-CL")} despachos en {totalDays} días
+        </span>
+      </div>
+
       {/* ── Summary cards ── */}
       <div className="grid grid-cols-3 gap-3">
         <div className="card-hover bg-gray-800 border border-gray-700 rounded-xl p-4 cursor-pointer"
@@ -3369,6 +3955,9 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                     className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='stockObj' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
                   KPI 7d · 15d · 21d
                 </th>
+                <th className="px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right whitespace-nowrap">
+                  Stock actual
+                </th>
                 <th onClick={() => invSort.toggle('calzadaCount')}
                     className={`px-3 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none whitespace-nowrap text-right transition-colors ${invSort.key==='calzadaCount' ? 'text-blue-400' : 'text-gray-500 hover:text-gray-200'}`}>
                   Calzadas
@@ -3382,6 +3971,16 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                   : s.tipo === 'hibrido'
                   ? {bg:'rgba(245,158,11,0.12)',color:'#FBBF24',border:'rgba(245,158,11,0.3)',label:'Híbrido'}
                   : {bg:'rgba(239,68,68,0.12)',color:'#F87171',border:'rgba(239,68,68,0.3)',label:'Calzado'};
+
+                // Stock actual → días cubiertos
+                const stockVal  = parseFloat(stockActual[s.producto] || "") || 0;
+                const diasCubiertos = stockVal > 0 && s.baseDailyDemand > 0
+                  ? Math.round(stockVal / s.baseDailyDemand) : null;
+                const stockColor = diasCubiertos == null ? "#4B5563"
+                  : diasCubiertos < DIAS_MIN ? "#F87171"
+                  : diasCubiertos > DIAS_MAX ? "#FBBF24"
+                  : "#34D399";
+
                 return (
                   <tr key={s.producto} className="hover:bg-blue-900/10 transition-colors">
                     <td className="px-3 py-2.5 text-sm font-medium text-white max-w-[260px]">
@@ -3414,10 +4013,31 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                         : <span style={{color:'#333345',fontSize:11}}>— bajo pedido</span>
                       }
                     </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      <div style={{display:"inline-flex",alignItems:"center",gap:5}}>
+                        <input
+                          type="number" min="0" step="0.5"
+                          value={stockActual[s.producto] || ""}
+                          placeholder="—"
+                          onChange={e => setStockActual(prev => ({...prev, [s.producto]: e.target.value}))}
+                          style={{
+                            width:70, padding:"3px 6px", borderRadius:6, fontSize:12, textAlign:"right",
+                            background:"#0F0F16", border:"1px solid #2a2a3a", color:"#E5E7EB", outline:"none"
+                          }}
+                          onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
+                          onBlur={e=>{e.target.style.borderColor="#2a2a3a";}}
+                        />
+                        {diasCubiertos != null && (
+                          <span style={{fontSize:11, fontWeight:700, color: stockColor, minWidth:36}}>
+                            {diasCubiertos}d
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
                       {s.calzadaCount > 0
                         ? <button
-                            onClick={() => setCalzadaModal({ producto: s.producto, events: s.calzadaEvents, medianQty: s.medianQty, threshold: s.calzadaThreshold })}
+                            onClick={() => setCalzadaModal({ producto: s.producto, events: s.calzadaEvents, allEvents: s.allEvents, medianQty: s.medianQty, threshold: s.calzadaThreshold })}
                             style={{
                               fontSize:11, padding:'2px 8px', borderRadius:99, fontWeight:600,
                               background:'rgba(139,92,246,0.12)', color:'#A78BFA',
@@ -3452,27 +4072,33 @@ const InventarioTab = ({ guiasData, ventasData }) => {
 
       {/* ── Modal detalle ventas calzadas ── */}
       {calzadaModal && (() => {
-        const { producto, events, medianQty, threshold } = calzadaModal;
-        const unit = getUnit(producto);
+        const { producto, allEvents, medianQty, threshold } = calzadaModal;
+        const unit      = getUnit(producto);
         const unitLabel = unit === 'uns.' ? 'unidades' : 'kilos';
-        // Agrupar por cliente para ver patrón
-        const porCliente = {};
-        events.forEach(e => {
-          if (!porCliente[e.cliente]) porCliente[e.cliente] = { cliente: e.cliente, eventos: [], totalQty: 0, totalAmt: 0 };
-          porCliente[e.cliente].eventos.push(e);
-          porCliente[e.cliente].totalQty += e.cantidad;
-          porCliente[e.cliente].totalAmt += e.cantidad * (e.precio || 0);
-        });
-        const clienteGroups = Object.values(porCliente).sort((a,b) => b.totalQty - a.totalQty);
-        const grandTotalQty = events.reduce((s,e) => s + e.cantidad, 0);
-        const grandTotalAmt = events.reduce((s,e) => s + e.cantidad * (e.precio || 0), 0);
-        const fmtDate = d => d ? `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getFullYear()}` : '—';
+        const prodNormalSet = manualNormal[producto] || new Set();
+        const evKey = e => `${e.fecha.toISOString().slice(0,10)}_${e.cliente}_${e.cantidad}`;
+        // Only show events that exceed threshold (auto-calzadas) — the user can toggle each
+        const overThreshold = (allEvents || []).filter(e => e.cantidad > threshold).sort((a,b) => b.fecha - a.fecha);
+        const grandTotalQty = overThreshold.reduce((s,e) => s + e.cantidad, 0);
+        const grandTotalAmt = overThreshold.reduce((s,e) => s + e.cantidad * (e.precio||0), 0);
+        const excludedQty   = overThreshold.filter(e => !prodNormalSet.has(evKey(e))).reduce((s,e) => s + e.cantidad, 0);
+        const fmtD = d => d ? `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getFullYear()}` : '—';
         const fmtCLP = n => n > 0 ? '$' + Math.round(n).toLocaleString('es-CL') : '—';
+
+        // Group by client
+        const porCliente = {};
+        overThreshold.forEach(e => {
+          if (!porCliente[e.cliente]) porCliente[e.cliente] = { cliente: e.cliente, eventos: [] };
+          porCliente[e.cliente].eventos.push(e);
+        });
+        const clienteGroups = Object.values(porCliente).sort((a,b) =>
+          b.eventos.reduce((s,e)=>s+e.cantidad,0) - a.eventos.reduce((s,e)=>s+e.cantidad,0)
+        );
 
         return (
           <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
                onClick={() => setCalzadaModal(null)}>
-            <div style={{background:'#111118',border:'1px solid #2a2a3a',borderRadius:16,width:'100%',maxWidth:780,maxHeight:'85vh',display:'flex',flexDirection:'column',overflow:'hidden'}}
+            <div style={{background:'#111118',border:'1px solid #2a2a3a',borderRadius:16,width:'100%',maxWidth:820,maxHeight:'88vh',display:'flex',flexDirection:'column',overflow:'hidden'}}
                  onClick={e => e.stopPropagation()}>
 
               {/* Header */}
@@ -3482,11 +4108,12 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                     <span style={{fontSize:11,padding:'2px 8px',borderRadius:99,fontWeight:700,background:'rgba(139,92,246,0.15)',color:'#A78BFA',border:'1px solid rgba(139,92,246,0.3)'}}>
                       Ventas calzadas
                     </span>
-                    <span style={{fontSize:11,color:'#4B5563'}}>umbral: &gt; {fmt(threshold,0)} {unit} (3× mediana {fmt(medianQty,0)} {unit})</span>
+                    <span style={{fontSize:11,color:'#4B5563'}}>umbral: &gt;{fmt(threshold,0)} {unit} (3× mediana {fmt(medianQty,0)} {unit})</span>
                   </div>
                   <div style={{fontSize:15,fontWeight:700,color:'#E5E7EB',lineHeight:1.3}}>{producto}</div>
                   <div style={{fontSize:12,color:'#6B7280',marginTop:3}}>
-                    {events.length} evento{events.length!==1?'s':''} · {fmt(grandTotalQty,0)} {unit} totales
+                    {overThreshold.length} evento{overThreshold.length!==1?'s':''} sobre umbral ·{' '}
+                    <span style={{color:'#F87171'}}>{fmt(excludedQty,0)} {unit} excluidos</span>
                     {grandTotalAmt > 0 && <> · {fmtCLP(grandTotalAmt)}</>}
                   </div>
                 </div>
@@ -3496,55 +4123,74 @@ const InventarioTab = ({ guiasData, ventasData }) => {
                 </button>
               </div>
 
-              {/* Body — scrollable */}
-              <div style={{overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:16}}>
-                {clienteGroups.map(cg => (
-                  <div key={cg.cliente} style={{background:'#0D0D14',border:'1px solid #1a1a28',borderRadius:12,overflow:'hidden'}}>
-                    {/* Cliente header */}
-                    <div style={{padding:'10px 14px',background:'rgba(139,92,246,0.07)',borderBottom:'1px solid #1a1a28',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                      <span style={{fontSize:13,fontWeight:600,color:'#C4B5FD'}}>{cg.cliente}</span>
-                      <span style={{fontSize:11,color:'#6B7280'}}>
-                        {cg.eventos.length} ev · {fmt(cg.totalQty,0)} {unit}
-                        {cg.totalAmt > 0 && <> · {fmtCLP(cg.totalAmt)}</>}
-                      </span>
-                    </div>
-                    {/* Eventos del cliente */}
-                    <table style={{width:'100%',borderCollapse:'collapse'}}>
-                      <thead>
-                        <tr style={{background:'rgba(255,255,255,0.02)'}}>
-                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'left'}}>Fecha</th>
-                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Cantidad</th>
-                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Precio unit.</th>
-                          <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {cg.eventos.sort((a,b)=>b.fecha-a.fecha).map((e,i) => (
-                          <tr key={i} style={{borderTop:'1px solid #1a1a28'}}>
-                            <td style={{padding:'7px 14px',fontSize:12,color:'#9CA3AF'}}>{fmtDate(e.fecha)}</td>
-                            <td style={{padding:'7px 14px',fontSize:13,fontWeight:700,color:'#A78BFA',textAlign:'right'}}>{fmt(e.cantidad,0)} {unit}</td>
-                            <td style={{padding:'7px 14px',fontSize:12,color:'#6B7280',textAlign:'right'}}>{fmtCLP(e.precio)}</td>
-                            <td style={{padding:'7px 14px',fontSize:12,color: e.precio > 0 ? '#E5E7EB' : '#4B5563',textAlign:'right'}}>{fmtCLP(e.cantidad * (e.precio||0))}</td>
+              {/* Body */}
+              <div style={{overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:14}}>
+                <p style={{fontSize:11,color:'#4B5563',marginBottom:4}}>
+                  Activa <span style={{color:'#34D399',fontWeight:600}}>Incluir en base</span> para que un evento entre al cálculo de demanda normal (p.ej. si no fue realmente una venta calzada).
+                </p>
+                {clienteGroups.map(cg => {
+                  const cgQty = cg.eventos.reduce((s,e)=>s+e.cantidad,0);
+                  return (
+                    <div key={cg.cliente} style={{background:'#0D0D14',border:'1px solid #1a1a28',borderRadius:12,overflow:'hidden'}}>
+                      <div style={{padding:'9px 14px',background:'rgba(139,92,246,0.07)',borderBottom:'1px solid #1a1a28',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                        <span style={{fontSize:13,fontWeight:600,color:'#C4B5FD'}}>{cg.cliente}</span>
+                        <span style={{fontSize:11,color:'#6B7280'}}>{cg.eventos.length} ev · {fmt(cgQty,0)} {unit}</span>
+                      </div>
+                      <table style={{width:'100%',borderCollapse:'collapse'}}>
+                        <thead>
+                          <tr style={{background:'rgba(255,255,255,0.02)'}}>
+                            <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'left'}}>Fecha</th>
+                            <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Cantidad</th>
+                            <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Precio unit.</th>
+                            <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'right'}}>Total</th>
+                            <th style={{padding:'6px 14px',fontSize:10,fontWeight:600,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em',textAlign:'center'}}>¿Base?</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
+                        </thead>
+                        <tbody>
+                          {cg.eventos.map((e, i) => {
+                            const k       = evKey(e);
+                            const isNorm  = prodNormalSet.has(k);
+                            return (
+                              <tr key={i} style={{borderTop:'1px solid #1a1a28', background: isNorm ? 'rgba(16,185,129,0.04)' : 'transparent'}}>
+                                <td style={{padding:'7px 14px',fontSize:12,color:'#9CA3AF'}}>{fmtD(e.fecha)}</td>
+                                <td style={{padding:'7px 14px',fontSize:13,fontWeight:700,color: isNorm ? '#6EE7B7' : '#A78BFA',textAlign:'right'}}>{fmt(e.cantidad,0)} {unit}</td>
+                                <td style={{padding:'7px 14px',fontSize:12,color:'#6B7280',textAlign:'right'}}>{fmtCLP(e.precio)}</td>
+                                <td style={{padding:'7px 14px',fontSize:12,color: e.precio>0?'#E5E7EB':'#4B5563',textAlign:'right'}}>{fmtCLP(e.cantidad*(e.precio||0))}</td>
+                                <td style={{padding:'5px 14px',textAlign:'center'}}>
+                                  <button
+                                    onClick={() => toggleManualNormal(producto, k)}
+                                    style={{
+                                      fontSize:10, padding:'3px 9px', borderRadius:99, fontWeight:700, cursor:'pointer',
+                                      background: isNorm ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.04)',
+                                      color:      isNorm ? '#34D399'                : '#4B5563',
+                                      border:     isNorm ? '1px solid rgba(16,185,129,0.35)' : '1px solid #2a2a3a',
+                                      transition: 'all 0.15s',
+                                    }}>
+                                    {isNorm ? '✓ En base' : 'Excluir'}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Footer */}
-              <div style={{padding:'12px 20px',borderTop:'1px solid #1e1e2e',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                <span style={{fontSize:11,color:'#4B5563'}}>
-                  Estos eventos están excluidos del cálculo de demanda base y targets de stock del SKU.
+              <div style={{padding:'12px 20px',borderTop:'1px solid #1e1e2e',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+                <span style={{fontSize:11,color:'#4B5563',flex:1}}>
+                  Los eventos en <span style={{color:'#F87171'}}>rojo/violeta</span> se excluyen de la demanda base. Los marcados en <span style={{color:'#34D399'}}>verde</span> se incluyen.
                 </span>
-                <div style={{display:'flex',gap:16,textAlign:'right'}}>
+                <div style={{display:'flex',gap:16,textAlign:'right',flexShrink:0}}>
                   <div>
-                    <div style={{fontSize:10,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em'}}>Total {unitLabel}</div>
+                    <div style={{fontSize:10,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em'}}>Total sobre umbral</div>
                     <div style={{fontSize:15,fontWeight:700,color:'#A78BFA'}}>{fmt(grandTotalQty,0)} {unit}</div>
                   </div>
                   {grandTotalAmt > 0 && <div>
-                    <div style={{fontSize:10,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em'}}>Total monto</div>
+                    <div style={{fontSize:10,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.05em'}}>Monto total</div>
                     <div style={{fontSize:15,fontWeight:700,color:'#E5E7EB'}}>{fmtCLP(grandTotalAmt)}</div>
                   </div>}
                 </div>
@@ -3758,13 +4404,12 @@ function App() {
   const hasData = Object.values(rawData).some((d) => d.length > 0) || priceQueue.version > 0;
 
   const TABS = [
-    { label: "Resumen",    icon: <BarChart2    size={15} />, count: null                   },
-    { label: "Ventas",     icon: <TrendingUp   size={15} />, count: rawData.ventas.length  },
-    { label: "Clientes",   icon: <ShoppingCart size={15} />, count: rawData.guias.length   },
-    { label: "Compras",    icon: <Package      size={15} />, count: rawData.compras.length },
-    { label: "Precios",    icon: <DollarSign   size={15} />, count: null                   },
-    { label: "Productos",  icon: <BarChart2    size={15} />, count: rawData.ventas.length  },
-    { label: "Inventario", icon: <Package      size={15} />, count: rawData.guias.length || rawData.ventas.length },
+    { label: "Resumen",        icon: <BarChart2    size={15} />, count: null                                       },
+    { label: "Precios",        icon: <DollarSign   size={15} />, count: null                                       },
+    { label: "Inventario",     icon: <Package      size={15} />, count: rawData.guias.length || rawData.ventas.length },
+    { label: "Compras",        icon: <Package      size={15} />, count: rawData.compras.length                     },
+    { label: "Venta/Producto", icon: <BarChart2    size={15} />, count: rawData.ventas.length                      },
+    { label: "Ventas/Cliente", icon: <TrendingUp   size={15} />, count: rawData.ventas.length                      },
   ];
 
   if (!loaded) return isAdmin
@@ -3923,7 +4568,7 @@ function App() {
           : <EmptyState msg="Carga datos para ver el resumen" icon={<BarChart2 size={48}/>}/>
         )}
         {activeTab === 1 && (rawData.ventas.length > 0
-          ? <VentasTab  data={rawData.ventas}  />
+          ? <VentasTab  data={rawData.ventas} guiasData={rawData.guias} />
           : <EmptyState msg="No se detectó archivo de ventas"            icon={<TrendingUp   size={48} />} />)}
         {activeTab === 2 && (rawData.guias.length > 0
           ? <GuiasTab   data={rawData.guias}   />
@@ -3932,7 +4577,7 @@ function App() {
           ? <ComprasTab data={rawData.compras} ventasData={rawData.ventas} />
           : <EmptyState msg="No se detectó archivo de compras"           icon={<Package      size={48} />} />)}
         <div style={{display: activeTab === 4 ? "block" : "none"}}>
-          <PreciosTab pendingFiles={priceQueue} allRows={precioRows} setAllRows={setPrecioRows} fileCards={precioCards} setFileCards={setPrecioCards} />
+          <PreciosTab pendingFiles={priceQueue} allRows={precioRows} setAllRows={setPrecioRows} fileCards={precioCards} setFileCards={setPrecioCards} comprasData={rawData.compras} />
         </div>
         {activeTab === 5 && (rawData.ventas.length > 0
           ? <ProductosErrorBoundary><ProductosTab data={rawData.ventas} /></ProductosErrorBoundary>
