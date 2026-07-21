@@ -2908,12 +2908,20 @@ class ProductosErrorBoundary extends React.Component {
 }
 
 const ProductosTab = ({ data }) => {
-  const [search,        setSearch]        = useState("");
-  const [clientFilter,  setClientFilter]  = useState("");
-  const [dateFrom,      setDateFrom]      = useState("");
-  const [dateTo,        setDateTo]        = useState("");
-  const [panelProduct,  setPanelProduct]  = useState(null);
+  const [search,           setSearch]           = useState("");
+  const [selectedClients,  setSelectedClients]  = useState(new Set());
+  const [clientSearch,     setClientSearch]     = useState("");
+  const [clientPanelOpen,  setClientPanelOpen]  = useState(false);
+  const [dateFrom,         setDateFrom]         = useState("");
+  const [dateTo,           setDateTo]           = useState("");
+  const [panelProduct,     setPanelProduct]     = useState(null);
   const prodSort = useSort("venta", "desc");
+
+  const toggleClient = (c) => setSelectedClients(prev => {
+    const next = new Set(prev);
+    next.has(c) ? next.delete(c) : next.add(c);
+    return next;
+  });
 
   const rows = useMemo(() =>
     data.map((r) => ({
@@ -2951,40 +2959,40 @@ const ProductosTab = ({ data }) => {
   const filteredRows = useMemo(() => {
     const from = dateFrom ? new Date(dateFrom) : null;
     const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
-    const cli  = clientFilter.trim() ? normStr(clientFilter) : null;
     return rows.filter((r) => {
       if (from && r.fecha < from) return false;
       if (to   && r.fecha > to)   return false;
-      if (cli  && !normStr(r.cliente || "").includes(cli)) return false;
+      if (selectedClients.size > 0 && !selectedClients.has(r.cliente)) return false;
       return true;
     });
-  }, [rows, dateFrom, dateTo, clientFilter]);
+  }, [rows, dateFrom, dateTo, selectedClients]);
 
   const productSummary = useMemo(() => {
     const map = {};
     filteredRows.forEach((r) => {
       const k = r.producto;
-      if (!map[k]) map[k] = { producto: k, venta: 0, contrib: 0, cantidad: 0, clientes: new Set(), rows: [] };
+      if (!map[k]) map[k] = { producto: k, venta: 0, contrib: 0, cantidad: 0, clientes: new Set(), rows: [], precios: [] };
       map[k].venta    += r.venta;
       map[k].contrib  += r.contrib;
       map[k].cantidad += r.cantidad;
       if (r.cliente) map[k].clientes.add(r.cliente);
       map[k].rows.push(r);
+      if (r.precioUn > 0) map[k].precios.push(r.precioUn);
     });
     return Object.values(map).map((p) => {
-      const margen = p.venta > 0 ? (p.contrib / p.venta) * 100 : 0;
-      // Delta 30d: last 30d vs previous 30d within filtered range
+      const margen        = p.venta > 0 ? (p.contrib / p.venta) * 100 : 0;
+      const precioMin     = p.precios.length ? Math.min(...p.precios) : null;
+      const precioMax     = p.precios.length ? Math.max(...p.precios) : null;
+      const precioPromedio = p.cantidad > 0 ? p.venta / p.cantidad : null;
       const prodRows = filteredRows.filter(r => r.producto === p.producto);
-      const curr30End = dateTo ? new Date(dateTo + "T23:59:59") : new Date();
-      const curr30Start = new Date(curr30End.getTime() - 29 * 86400000);
-      const prev30End2 = new Date(curr30End.getTime() - 30 * 86400000);
+      const curr30End    = dateTo ? new Date(dateTo + "T23:59:59") : new Date();
+      const curr30Start  = new Date(curr30End.getTime() - 29 * 86400000);
+      const prev30End2   = new Date(curr30End.getTime() - 30 * 86400000);
       const prev30Start2 = new Date(curr30End.getTime() - 59 * 86400000);
       const curr30V = prodRows.filter(r => r.fecha >= curr30Start && r.fecha <= curr30End).reduce((s,r) => s + r.venta, 0);
       const prev30V = prodRows.filter(r => r.fecha >= prev30Start2 && r.fecha <= prev30End2).reduce((s,r) => s + r.venta, 0);
       const delta30 = prev30V > 0 ? ((curr30V - prev30V) / prev30V) * 100 : null;
-      return {
-        ...p, clientes: p.clientes.size, margen, delta30,
-      };
+      return { ...p, clientes: p.clientes.size, margen, precioMin, precioMax, precioPromedio, delta30 };
     });
   }, [filteredRows, dateTo]);
 
@@ -3152,20 +3160,97 @@ const ProductosTab = ({ data }) => {
               onFocus={e=>{e.target.style.borderColor="#3B4DE8";}}
               onBlur={e=>{e.target.style.borderColor="#21212E";}}/>
           </div>
-          <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); setClientFilter(""); setSearch(""); go(0); }}
+          <button type="button" onClick={() => { setDateFrom(dateBounds.min); setDateTo(dateBounds.max); setSelectedClients(new Set()); setSearch(""); go(0); }}
             className="text-xs text-gray-600 hover:text-blue-400 transition-colors pb-2.5">Restablecer</button>
         </div>
         <div className="flex-1 min-w-[200px]">
           <SearchBar value={search} onChange={(v) => { setSearch(v); go(0); }} placeholder="Buscar producto…"/>
         </div>
-        <div style={{minWidth:180}}>
-          <p className="text-xs mb-1" style={{color:"#444458"}}>Cliente</p>
-          <select value={clientFilter} onChange={(e) => { setClientFilter(e.target.value); go(0); }}
-            style={{background:"#0F0F16",border:"1px solid #21212E",borderRadius:8,color: clientFilter ? "#E5E7EB" : "#6B7280",
-              padding:"7px 10px",fontSize:13,width:"100%",outline:"none"}}>
-            <option value="">Todos los clientes</option>
-            {clientList.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
+
+        {/* Multi-select clientes */}
+        <div style={{position:"relative", minWidth:220}}>
+          <p className="text-xs mb-1" style={{color:"#444458"}}>
+            Clientes
+            {selectedClients.size > 0 && <span style={{marginLeft:6,color:"#818CF8",fontWeight:600}}>{selectedClients.size} seleccionado{selectedClients.size!==1?"s":""}</span>}
+          </p>
+          <button type="button"
+            onClick={() => setClientPanelOpen(v => !v)}
+            style={{
+              width:"100%", padding:"7px 10px", borderRadius:8, fontSize:13, textAlign:"left",
+              background:"#0F0F16", border:`1px solid ${clientPanelOpen ? "#3B4DE8" : "#21212E"}`,
+              color: selectedClients.size > 0 ? "#E5E7EB" : "#6B7280", cursor:"pointer",
+              display:"flex", justifyContent:"space-between", alignItems:"center"
+            }}>
+            <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:160}}>
+              {selectedClients.size === 0
+                ? "Todos los clientes"
+                : selectedClients.size === 1
+                ? Array.from(selectedClients)[0]
+                : `${selectedClients.size} clientes`}
+            </span>
+            <span style={{fontSize:10,color:"#6B7280",marginLeft:6}}>{clientPanelOpen ? "▲" : "▼"}</span>
+          </button>
+
+          {clientPanelOpen && (
+            <div style={{
+              position:"absolute", top:"calc(100% + 4px)", left:0, right:0, zIndex:200,
+              background:"#111827", border:"1px solid #21212E", borderRadius:10,
+              boxShadow:"0 8px 32px rgba(0,0,0,0.5)", overflow:"hidden"
+            }}
+              onMouseLeave={() => {}}>
+              {/* Search within list */}
+              <div style={{padding:"8px 8px 4px"}}>
+                <input
+                  type="text" placeholder="Buscar cliente…" value={clientSearch}
+                  onChange={e => setClientSearch(e.target.value)}
+                  autoFocus
+                  style={{
+                    width:"100%", padding:"5px 9px", borderRadius:6, fontSize:12,
+                    background:"#0F0F16", border:"1px solid #21212E", color:"#E5E7EB", outline:"none"
+                  }}/>
+              </div>
+              {/* All / None */}
+              <div style={{display:"flex",gap:6,padding:"4px 8px 6px",borderBottom:"1px solid #1f2937"}}>
+                <button type="button" onClick={() => { setSelectedClients(new Set(clientList)); go(0); }}
+                  style={{flex:1,fontSize:11,padding:"3px 0",borderRadius:5,background:"rgba(59,130,246,0.1)",
+                    color:"#93C5FD",border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer"}}>Todos</button>
+                <button type="button"
+                  onClick={() => { setSelectedClients(new Set()); go(0); }}
+                  style={{flex:1,fontSize:11,padding:"3px 0",borderRadius:5,background:"rgba(255,255,255,0.03)",
+                    color:"#6B7280",border:"1px solid #21212E",cursor:"pointer"}}>Ninguno</button>
+              </div>
+              {/* Scrollable list */}
+              <div style={{maxHeight:200, overflowY:"auto"}}>
+                {clientList
+                  .filter(c => !clientSearch.trim() || normStr(c).includes(normStr(clientSearch)))
+                  .map(c => {
+                    const checked = selectedClients.size === 0 || selectedClients.has(c);
+                    const explicit = selectedClients.size > 0;
+                    return (
+                      <label key={c} style={{
+                        display:"flex", alignItems:"center", gap:8, padding:"6px 10px",
+                        cursor:"pointer", fontSize:12,
+                        color: explicit && !selectedClients.has(c) ? "#4B5563" : "#E5E7EB",
+                        background: selectedClients.has(c) ? "rgba(99,102,241,0.07)" : "transparent"
+                      }}
+                        onMouseEnter={e => e.currentTarget.style.background = selectedClients.has(c) ? "rgba(99,102,241,0.12)" : "rgba(255,255,255,0.03)"}
+                        onMouseLeave={e => e.currentTarget.style.background = selectedClients.has(c) ? "rgba(99,102,241,0.07)" : "transparent"}>
+                        <input type="checkbox"
+                          checked={selectedClients.has(c)}
+                          onChange={() => { toggleClient(c); go(0); }}
+                          style={{accentColor:"#6366F1",width:13,height:13,flexShrink:0}}/>
+                        <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c}</span>
+                      </label>
+                    );
+                  })}
+              </div>
+              <div style={{padding:"6px 8px",borderTop:"1px solid #1f2937",textAlign:"right"}}>
+                <button type="button" onClick={() => setClientPanelOpen(false)}
+                  style={{fontSize:11,padding:"3px 10px",borderRadius:5,background:"#1f2937",
+                    color:"#9CA3AF",border:"1px solid #374151",cursor:"pointer"}}>Cerrar</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -3199,13 +3284,16 @@ const ProductosTab = ({ data }) => {
           <table className="w-full">
             <thead className="bg-gray-800/60">
               <tr>
-                <STH label="Producto"     sk="producto" />
-                <STH label="Venta Neta"   sk="venta"    right/>
-                <STH label="Contribución" sk="contrib"  right/>
-                <STH label="Margen %"     sk="margen"   right/>
-                <STH label="Cantidad"     sk="cantidad" right/>
-                <STH label="Clientes"     sk="clientes" right/>
-                <STH label="Tendencia"    sk="delta30"  right/>
+                <STH label="Producto"     sk="producto"      />
+                <STH label="Venta Neta"   sk="venta"         right/>
+                <STH label="Contribución" sk="contrib"       right/>
+                <STH label="Margen %"     sk="margen"        right/>
+                <STH label="Cantidad"     sk="cantidad"      right/>
+                <STH label="P. Mínimo"    sk="precioMin"     right/>
+                <STH label="P. Máximo"    sk="precioMax"     right/>
+                <STH label="P. Promedio"  sk="precioPromedio" right/>
+                <STH label="Clientes"     sk="clientes"      right/>
+                <STH label="Tendencia"    sk="delta30"       right/>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/60">
@@ -3219,6 +3307,9 @@ const ProductosTab = ({ data }) => {
                   <Td ch={"$" + fmtM(p.contrib)}  right color="text-emerald-400"/>
                   <Td ch={fmtPct(p.margen)} right color={p.margen > 15 ? "text-emerald-300" : p.margen > 0 ? "text-yellow-300" : "text-red-400"}/>
                   <Td ch={fmt(p.cantidad, 2)} right dim/>
+                  <Td ch={p.precioMin     != null ? "$" + fmtM(p.precioMin)      : "—"} right color="text-blue-300"/>
+                  <Td ch={p.precioMax     != null ? "$" + fmtM(p.precioMax)      : "—"} right color="text-blue-300"/>
+                  <Td ch={p.precioPromedio != null ? "$" + fmtM(p.precioPromedio) : "—"} right color="text-blue-300" bold/>
                   <Td ch={p.clientes} right dim/>
                   <td className="px-3 py-2.5 text-sm text-right whitespace-nowrap">
                     {p.delta30 != null && isFinite(p.delta30)
@@ -4567,25 +4658,22 @@ function App() {
           ? <ResumenTab ventasData={rawData.ventas} guiasData={rawData.guias} comprasData={rawData.compras} />
           : <EmptyState msg="Carga datos para ver el resumen" icon={<BarChart2 size={48}/>}/>
         )}
-        {activeTab === 1 && (rawData.ventas.length > 0
-          ? <VentasTab  data={rawData.ventas} guiasData={rawData.guias} />
-          : <EmptyState msg="No se detectó archivo de ventas"            icon={<TrendingUp   size={48} />} />)}
-        {activeTab === 2 && (rawData.guias.length > 0
-          ? <GuiasTab   data={rawData.guias}   />
-          : <EmptyState msg="No se detectó archivo de guías de despacho" icon={<ShoppingCart size={48} />} />)}
-        {activeTab === 3 && (rawData.compras.length > 0
-          ? <ComprasTab data={rawData.compras} ventasData={rawData.ventas} />
-          : <EmptyState msg="No se detectó archivo de compras"           icon={<Package      size={48} />} />)}
-        <div style={{display: activeTab === 4 ? "block" : "none"}}>
+        <div style={{display: activeTab === 1 ? "block" : "none"}}>
           <PreciosTab pendingFiles={priceQueue} allRows={precioRows} setAllRows={setPrecioRows} fileCards={precioCards} setFileCards={setPrecioCards} comprasData={rawData.compras} />
         </div>
-        {activeTab === 5 && (rawData.ventas.length > 0
-          ? <ProductosErrorBoundary><ProductosTab data={rawData.ventas} /></ProductosErrorBoundary>
-          : <EmptyState msg="No se detectó archivo de ventas" icon={<BarChart2 size={48} />} />)}
-        {activeTab === 6 && (rawData.guias.length > 0 || rawData.ventas.length > 0
+        {activeTab === 2 && (rawData.guias.length > 0 || rawData.ventas.length > 0
           ? <InventarioTab guiasData={rawData.guias} ventasData={rawData.ventas} />
           : <EmptyState msg="Carga datos de ventas o despachos para ver el análisis de inventario" icon={<Package size={48}/>}/>
         )}
+        {activeTab === 3 && (rawData.compras.length > 0
+          ? <ComprasTab data={rawData.compras} ventasData={rawData.ventas} />
+          : <EmptyState msg="No se detectó archivo de compras" icon={<Package size={48} />} />)}
+        {activeTab === 4 && (rawData.ventas.length > 0
+          ? <ProductosErrorBoundary><ProductosTab data={rawData.ventas} /></ProductosErrorBoundary>
+          : <EmptyState msg="No se detectó archivo de ventas" icon={<BarChart2 size={48} />} />)}
+        {activeTab === 5 && (rawData.ventas.length > 0
+          ? <VentasTab data={rawData.ventas} guiasData={rawData.guias} />
+          : <EmptyState msg="No se detectó archivo de ventas" icon={<TrendingUp size={48} />} />)}
       </div>
     </div>
   );
