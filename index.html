@@ -3400,12 +3400,12 @@ const ResumenTab = ({ ventasData, guiasData, comprasData }) => {
   const summaries = useMemo(() => {
     return Object.entries(clientMap).map(([cliente, rows]) => {
       const f = (a, b) => rows.filter(r => inR(r.fecha, a, b));
-      const totalV   = rows.reduce((s, r) => s + r.venta, 0);
-      const r30      = calcP(f(P.roll30Start, P.today));
-      const p30      = calcP(f(s0(prev30Start), e23(prev30End)));
+      const totalV    = rows.reduce((s, r) => s + r.venta, 0);
+      const r30       = calcP(f(P.roll30Start, P.today));
+      const p30       = calcP(f(s0(prev30Start), e23(prev30End)));
       const trimestre = calcP(f(P.qStart, P.qEnd));
       return { cliente, totalV, roll30: r30, prev30: p30, quarter: trimestre };
-    }).sort((a, b) => b.totalV - a.totalV);
+    }).sort((a, b) => b.quarter.venta - a.quarter.venta);
   }, [clientMap, P, prev30Start, prev30End]);
 
   const totalVentaGlobal = summaries.reduce((s, c) => s + c.totalV, 0);
