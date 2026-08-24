@@ -1257,8 +1257,13 @@ const VentasTab = ({ data, guiasData = [] }) => {
   }, [filteredRows]);
 
   const brandMap = useMemo(() => {
+    const from = dateFrom ? new Date(dateFrom) : null;
+    const to   = dateTo   ? new Date(dateTo + "T23:59:59") : null;
     const m = {};
     guiasData.forEach((r) => {
+      const fecha    = parseDate(col(r, "Fecha"));
+      if (from && fecha && fecha < from) return;
+      if (to   && fecha && fecha > to)   return;
       const cliente  = col(r, "Razón Social", "Razon Social");
       const producto = col(r, "Producto");
       const marca    = (col(r, "Lote") || "").trim();
@@ -1268,7 +1273,7 @@ const VentasTab = ({ data, guiasData = [] }) => {
       m[cliente][producto].add(marca);
     });
     return m;
-  }, [guiasData]);
+  }, [guiasData, dateFrom, dateTo]);
 
   const P = useMemo(() => getPeriods(refDate), [refDate]);
 
@@ -4215,7 +4220,7 @@ const InventarioTab = ({ guiasData, ventasData }) => {
               </div>
 
               {/* Body */}
-              <div style={{overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:14}}>
+              <div style={{overflowY:'auto',flex:1,minHeight:0,padding:20,display:'flex',flexDirection:'column',gap:14}}>
                 <p style={{fontSize:11,color:'#4B5563',marginBottom:4}}>
                   Activa <span style={{color:'#34D399',fontWeight:600}}>Incluir en base</span> para que un evento entre al cálculo de demanda normal (p.ej. si no fue realmente una venta calzada).
                 </p>
